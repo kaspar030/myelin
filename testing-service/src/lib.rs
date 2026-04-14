@@ -79,6 +79,18 @@ where
     }
 }
 
+// -- Embassy convenience type aliases (what the macro would generate) --
+
+#[cfg(feature = "embassy")]
+/// Type alias for the embassy service endpoint for the Greeter service.
+pub type GreeterEmbassyService<M, const CHANNEL_DEPTH: usize> =
+    chanapi::transport_embassy::EmbassyService<M, GreeterRequest, GreeterResponse, CHANNEL_DEPTH>;
+
+#[cfg(feature = "embassy")]
+/// Type alias for the embassy client transport for the Greeter service.
+pub type GreeterEmbassyClientTransport<'a, M, const CHANNEL_DEPTH: usize> =
+    chanapi::transport_embassy::EmbassyClient<'a, M, GreeterRequest, GreeterResponse, CHANNEL_DEPTH>;
+
 // -- Service implementation trait --
 
 pub trait GreeterService {

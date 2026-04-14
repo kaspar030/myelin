@@ -17,6 +17,7 @@
 //!
 //! Implementations:
 //! - `transport_tokio` (feature `tokio`) — tokio mpsc + oneshot, local, no serialization.
+//! - `transport_embassy` (feature `embassy`) — embassy static channels + signals.
 
 pub mod error;
 pub mod transport;

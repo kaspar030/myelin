@@ -3,6 +3,10 @@ name = "testing-service"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+embassy = ["chanapi/embassy"]
+
 [dependencies]
 chanapi = { path = "../chanapi" }
 heapless = "0.8"

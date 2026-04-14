@@ -3,17 +3,16 @@
 #![allow(async_fn_in_trait)]
 
 use ariel_os::debug::{exit, log::info, ExitCode};
-use chanapi::transport_embassy::EmbassyService;
 use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use static_cell::StaticCell;
 use testing_service::{
-    GreeterClient, GreeterRequest, GreeterResponse, GreeterService, greeter_serve,
+    GreeterClient, GreeterEmbassyClientTransport, GreeterEmbassyService, GreeterService,
+    greeter_serve,
 };
 
 // -- The service channel --
-static SERVICE: EmbassyService<CriticalSectionRawMutex, GreeterRequest, GreeterResponse, 2> =
-    EmbassyService::new();
+static SERVICE: GreeterEmbassyService<CriticalSectionRawMutex, 2> = GreeterEmbassyService::new();
 
 /// Track how many clients have finished.
 static CLIENTS_DONE: AtomicU8 = AtomicU8::new(0);
@@ -50,16 +49,9 @@ async fn server_task() {
 // -- Client task 1 --
 #[ariel_os::task(autostart)]
 async fn client_task_1() {
-    static CLIENT_CELL: StaticCell<
-        chanapi::transport_embassy::EmbassyClient<
-            CriticalSectionRawMutex,
-            GreeterRequest,
-            GreeterResponse,
-            2,
-        >,
-    > = StaticCell::new();
-    let transport: &'static _ = CLIENT_CELL.init(SERVICE.client());
-    let client = GreeterClient::new(transport);
+    static CELL: StaticCell<GreeterEmbassyClientTransport<CriticalSectionRawMutex, 2>> =
+        StaticCell::new();
+    let client = GreeterClient::new(&*CELL.init(SERVICE.client()));
 
     let greeting = client.greet("client 1").await.expect("greet failed");
     info!("[client 1] {}", greeting.as_str());
@@ -76,16 +68,9 @@ async fn client_task_1() {
 // -- Client task 2 --
 #[ariel_os::task(autostart)]
 async fn client_task_2() {
-    static CLIENT_CELL: StaticCell<
-        chanapi::transport_embassy::EmbassyClient<
-            CriticalSectionRawMutex,
-            GreeterRequest,
-            GreeterResponse,
-            2,
-        >,
-    > = StaticCell::new();
-    let transport: &'static _ = CLIENT_CELL.init(SERVICE.client());
-    let client = GreeterClient::new(transport);
+    static CELL: StaticCell<GreeterEmbassyClientTransport<CriticalSectionRawMutex, 2>> =
+        StaticCell::new();
+    let client = GreeterClient::new(&*CELL.init(SERVICE.client()));
 
     let greeting = client.greet("client 2").await.expect("greet failed");
     info!("[client 2] {}", greeting.as_str());
