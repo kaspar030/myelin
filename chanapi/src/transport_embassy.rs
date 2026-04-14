@@ -48,6 +48,11 @@ impl<M: RawMutex, Req, Resp, const MAX_CALLERS: usize, const CHANNEL_DEPTH: usiz
     /// Create a new transport. All storage is inline — use in a `static`.
     pub const fn new() -> Self {
         assert!(MAX_CALLERS <= 8, "MAX_CALLERS must be <= 8");
+        assert!(CHANNEL_DEPTH >= 1, "CHANNEL_DEPTH must be >= 1");
+        assert!(
+            CHANNEL_DEPTH <= MAX_CALLERS,
+            "CHANNEL_DEPTH must be <= MAX_CALLERS (there can never be more in-flight requests than callers)"
+        );
         Self {
             requests: Channel::new(),
             replies: [const { Signal::new() }; MAX_CALLERS],

@@ -15,7 +15,7 @@ static TRANSPORT: EmbassyLocal<
     GreeterRequest,
     GreeterResponse,
     1,
-    4,
+    1,
 > = EmbassyLocal::new();
 
 // -- Service implementation --
