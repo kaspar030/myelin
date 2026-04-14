@@ -8,7 +8,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use testing_service::{GreeterService, greeter_embassy_service, greeter_serve};
 
 // -- Instantiate the greeter service --
-greeter_embassy_service!(GREETER, CriticalSectionRawMutex, 2);
+greeter_embassy_service!(CriticalSectionRawMutex, 2);
 
 /// Track how many clients have finished.
 static CLIENTS_DONE: AtomicU8 = AtomicU8::new(0);

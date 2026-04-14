@@ -99,14 +99,13 @@ pub type GreeterEmbassyClientTransport<'a, M, const CHANNEL_DEPTH: usize> =
 /// Instantiate a Greeter embassy service and generate helper macros.
 ///
 /// Creates:
-/// - `static $name: GreeterEmbassyService<$mutex, $depth>`
-/// - `macro $client_macro!()` — creates a `GreeterClient` connected to the service
-/// - `macro $server_macro!()` — creates a server handle for the dispatch loop
+/// - `greeter_client!()` — creates a `GreeterClient` connected to the service (call once per task)
+/// - `greeter_server!()` — creates a server handle for the dispatch loop
 ///
 /// # Example
 ///
 /// ```ignore
-/// greeter_embassy_service!(GREETER, CriticalSectionRawMutex, 2);
+/// greeter_embassy_service!(CriticalSectionRawMutex, 2);
 ///
 /// // In client tasks:
 /// let client = greeter_client!();
@@ -118,8 +117,8 @@ pub type GreeterEmbassyClientTransport<'a, M, const CHANNEL_DEPTH: usize> =
 #[cfg(feature = "embassy")]
 #[macro_export]
 macro_rules! greeter_embassy_service {
-    ($name:ident, $mutex:ty, $depth:expr) => {
-        static $name: $crate::GreeterEmbassyService<$mutex, $depth> =
+    ($mutex:ty, $depth:expr) => {
+        static __GREETER_SERVICE: $crate::GreeterEmbassyService<$mutex, $depth> =
             $crate::GreeterEmbassyService::new();
 
         /// Connect a client to the greeter service. Call once per task.
@@ -129,14 +128,14 @@ macro_rules! greeter_embassy_service {
                 static CELL: $crate::static_cell::StaticCell<
                     $crate::GreeterEmbassyClientTransport<'static, $mutex, $depth>,
                 > = $crate::static_cell::StaticCell::new();
-                $crate::GreeterClient::new(&*CELL.init($name.client()))
+                $crate::GreeterClient::new(&*CELL.init(__GREETER_SERVICE.client()))
             }};
         }
 
         /// Get a server handle for the greeter service dispatch loop.
         macro_rules! greeter_server {
             () => {
-                $name.server()
+                __GREETER_SERVICE.server()
             };
         }
     };
