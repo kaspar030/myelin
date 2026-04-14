@@ -3,4 +3,10 @@ name = "chanapi"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+std = []
+tokio = ["std", "dep:tokio"]
+
 [dependencies]
+tokio = { version = "1", features = ["sync"], optional = true }
