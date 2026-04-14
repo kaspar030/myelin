@@ -4,19 +4,24 @@
 
 use ariel_os::debug::{exit, log::info, ExitCode};
 use chanapi::transport_embassy::EmbassyLocal;
+use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use testing_service::{
     GreeterClient, GreeterRequest, GreeterResponse, GreeterService, greeter_serve,
 };
 
-// -- Static transport: 1 caller, channel depth 4 --
+// -- Static transport: 2 callers, channel depth 2 --
 static TRANSPORT: EmbassyLocal<
     CriticalSectionRawMutex,
     GreeterRequest,
     GreeterResponse,
-    1,
-    1,
+    2,
+    2,
 > = EmbassyLocal::new();
+
+/// Track how many clients have finished.
+static CLIENTS_DONE: AtomicU8 = AtomicU8::new(0);
+const NUM_CLIENTS: u8 = 2;
 
 // -- Service implementation --
 struct GreeterImpl;
@@ -47,17 +52,36 @@ async fn server_task() {
     }
 }
 
-// -- Client task --
+// -- Client task 1 --
 #[ariel_os::task(autostart)]
-async fn client_task() {
+async fn client_task_1() {
     let client = GreeterClient::new(TRANSPORT.client());
 
-    let greeting = client.greet("Ariel OS").await.expect("greet failed");
-    info!("{}", greeting.as_str());
+    let greeting = client.greet("client 1").await.expect("greet failed");
+    info!("[client 1] {}", greeting.as_str());
 
     let healthy = client.health().await.expect("health failed");
-    info!("healthy: {}", healthy);
+    info!("[client 1] healthy: {}", healthy);
 
-    info!("done.");
-    exit(ExitCode::SUCCESS);
+    info!("[client 1] done.");
+    if CLIENTS_DONE.fetch_add(1, Ordering::AcqRel) + 1 == NUM_CLIENTS {
+        exit(ExitCode::SUCCESS);
+    }
+}
+
+// -- Client task 2 --
+#[ariel_os::task(autostart)]
+async fn client_task_2() {
+    let client = GreeterClient::new(TRANSPORT.client());
+
+    let greeting = client.greet("client 2").await.expect("greet failed");
+    info!("[client 2] {}", greeting.as_str());
+
+    let healthy = client.health().await.expect("health failed");
+    info!("[client 2] healthy: {}", healthy);
+
+    info!("[client 2] done.");
+    if CLIENTS_DONE.fetch_add(1, Ordering::AcqRel) + 1 == NUM_CLIENTS {
+        exit(ExitCode::SUCCESS);
+    }
 }
