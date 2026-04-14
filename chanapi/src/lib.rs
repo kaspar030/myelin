@@ -19,6 +19,7 @@
 //! - `transport_tokio` (feature `tokio`) — tokio mpsc + oneshot, local, no serialization.
 //! - `transport_embassy` (feature `embassy`) — embassy static channels + signals.
 
+pub mod block_on;
 pub mod error;
 pub mod transport;
 
@@ -28,5 +29,6 @@ pub mod transport_tokio;
 #[cfg(feature = "embassy")]
 pub mod transport_embassy;
 
+pub use block_on::BlockOn;
 pub use error::{CallError, TransportResult};
 pub use transport::{ClientTransport, ServerTransport};

@@ -2,18 +2,18 @@
 #![no_std]
 #![allow(async_fn_in_trait)]
 
-use ariel_os::debug::{exit, log::info, ExitCode};
+use ariel_os::debug::{ExitCode, exit, log::info};
 use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use testing_service::{GreeterService, greeter_embassy_service, greeter_serve};
 
 // -- Two greeter service instances --
-greeter_embassy_service!(casual, CriticalSectionRawMutex, 2);
-greeter_embassy_service!(formal, CriticalSectionRawMutex, 2);
+greeter_embassy_service!(casual, CriticalSectionRawMutex, 3);
+greeter_embassy_service!(formal, CriticalSectionRawMutex, 3);
 
 /// Track how many clients have finished.
 static CLIENTS_DONE: AtomicU8 = AtomicU8::new(0);
-const NUM_CLIENTS: u8 = 2;
+const NUM_CLIENTS: u8 = 3;
 
 // -- Casual implementation --
 struct CasualGreeter;
@@ -95,6 +95,32 @@ async fn client_task_2() {
     info!("[client 2] formal: {}", g2.as_str());
 
     info!("[client 2] done.");
+    if CLIENTS_DONE.fetch_add(1, Ordering::AcqRel) + 1 == NUM_CLIENTS {
+        exit(ExitCode::SUCCESS);
+    }
+}
+
+#[ariel_os::thread(autostart)]
+fn client_thread() {
+    use ariel_os::thread;
+
+    /// Ariel OS thread `BlockOn` adapter.
+    struct ThreadBlockOn;
+    impl chanapi::BlockOn for ThreadBlockOn {
+        fn block_on<F: core::future::Future>(&self, fut: F) -> F::Output {
+            thread::block_on(fut)
+        }
+    }
+
+    let client = casual_client_sync!(ThreadBlockOn);
+
+    let g = client.greet("thread");
+    info!("[thread] casual: {}", g.as_str());
+
+    let h = client.health();
+    info!("[thread] healthy: {}", h);
+
+    info!("[thread] done.");
     if CLIENTS_DONE.fetch_add(1, Ordering::AcqRel) + 1 == NUM_CLIENTS {
         exit(ExitCode::SUCCESS);
     }

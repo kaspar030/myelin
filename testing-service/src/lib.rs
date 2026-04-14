@@ -90,6 +90,43 @@ where
     }
 }
 
+// -- Sync (blocking) client struct --
+
+/// A synchronous wrapper around [`GreeterClient`] for use from threads.
+///
+/// Wraps each async call with a [`BlockOn`] implementation.
+pub struct GreeterClientSync<T, B> {
+    inner: GreeterClient<T>,
+    block_on: B,
+}
+
+impl<T, B> GreeterClientSync<T, B>
+where
+    T: ClientTransport<GreeterRequest, GreeterResponse>,
+    B: chanapi::BlockOn,
+{
+    pub fn new(inner: GreeterClient<T>, block_on: B) -> Self {
+        Self { inner, block_on }
+    }
+
+    pub fn greet(
+        &self,
+        name: &str,
+    ) -> <T::Error as TransportResult<heapless::String<64>>>::Output
+    where
+        T::Error: TransportResult<heapless::String<64>>,
+    {
+        self.block_on.block_on(self.inner.greet(name))
+    }
+
+    pub fn health(&self) -> <T::Error as TransportResult<bool>>::Output
+    where
+        T::Error: TransportResult<bool>,
+    {
+        self.block_on.block_on(self.inner.health())
+    }
+}
+
 // -- Embassy convenience types (what the macro would generate) --
 
 #[cfg(feature = "embassy")]
@@ -147,6 +184,21 @@ macro_rules! greeter_embassy_service {
                 () => {
                     [<__GREETER_SERVICE_ $name:upper>].server()
                 };
+            }
+
+            /// Connect a sync (blocking) client to this greeter service instance.
+            /// Takes a `block_on` function that polls a future to completion.
+            /// Call once per thread.
+            macro_rules! [<$name _client_sync>] {
+                ($block_on:expr) => {{
+                    static CELL: $crate::static_cell::StaticCell<
+                        $crate::GreeterEmbassyClientTransport<'static, $mutex, $depth>,
+                    > = $crate::static_cell::StaticCell::new();
+                    $crate::GreeterClientSync::new(
+                        $crate::GreeterClient::new(&*CELL.init([<__GREETER_SERVICE_ $name:upper>].client())),
+                        $block_on,
+                    )
+                }};
             }
         }
     };
