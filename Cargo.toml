@@ -1,0 +1,3 @@
+[workspace]
+members = ["chanapi", "chanapi-macros", "testing"]
+resolver = "2"
