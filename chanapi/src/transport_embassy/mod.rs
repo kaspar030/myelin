@@ -1,6 +1,7 @@
 //! Embassy-based local transport: static `Channel` for requests, per-client `Signal` for replies.
 //!
 //! Moves Rust types directly — no serialization. All storage is static.
+//! The transport is infallible — channel send/receive and signal wait never fail.
 //!
 //! ## Usage
 //!
@@ -25,15 +26,3 @@ mod service;
 pub use client::EmbassyClient;
 pub use server::{EmbassyReplyToken, EmbassyServer};
 pub use service::EmbassyService;
-
-/// Errors from the embassy local transport.
-#[derive(Debug)]
-pub enum EmbassyLocalError {
-    // Currently infallible for local transport, but reserved for future use.
-}
-
-impl core::fmt::Display for EmbassyLocalError {
-    fn fmt(&self, _f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        Ok(())
-    }
-}
