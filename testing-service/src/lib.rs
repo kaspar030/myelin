@@ -8,7 +8,7 @@
 //! are all transport-generic.
 
 use chanapi::transport::{ClientTransport, ServerTransport};
-use chanapi::CallError;
+use chanapi::TransportResult;
 
 // Re-exports for macro use.
 #[cfg(feature = "embassy")]
@@ -56,33 +56,37 @@ where
     pub async fn greet(
         &self,
         name: &str,
-    ) -> Result<heapless::String<64>, CallError<T::Error>> {
+    ) -> <T::Error as TransportResult<heapless::String<64>>>::Output
+    where
+        T::Error: TransportResult<heapless::String<64>>,
+    {
         let mut s = heapless::String::new();
         // truncate if too long
         let _ = s.push_str(name);
-        let resp = self
+        let result = self
             .transport
             .call(GreeterRequest::Greet { name: s })
-            .await
-            .map_err(CallError::Transport)?;
+            .await;
 
-        match resp {
-            GreeterResponse::Greet(s) => Ok(s),
+        TransportResult::into_output(result.map(|resp| match resp {
+            GreeterResponse::Greet(s) => s,
             _ => unreachable!(),
-        }
+        }))
     }
 
-    pub async fn health(&self) -> Result<bool, CallError<T::Error>> {
-        let resp = self
+    pub async fn health(&self) -> <T::Error as TransportResult<bool>>::Output
+    where
+        T::Error: TransportResult<bool>,
+    {
+        let result = self
             .transport
             .call(GreeterRequest::Health)
-            .await
-            .map_err(CallError::Transport)?;
+            .await;
 
-        match resp {
-            GreeterResponse::Health(b) => Ok(b),
+        TransportResult::into_output(result.map(|resp| match resp {
+            GreeterResponse::Health(b) => b,
             _ => unreachable!(),
-        }
+        }))
     }
 }
 

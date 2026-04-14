@@ -4,6 +4,7 @@
 
 use tokio::sync::{mpsc, oneshot};
 
+use crate::error::{CallError, TransportResult};
 use crate::transport::{ClientTransport, ServerTransport};
 
 /// The client's handle — cloneable, send requests into the service.
@@ -37,6 +38,14 @@ impl core::fmt::Display for TokioLocalError {
         match self {
             TokioLocalError::ChannelClosed => write!(f, "channel closed"),
         }
+    }
+}
+
+impl<T> TransportResult<T> for TokioLocalError {
+    type Output = Result<T, CallError<TokioLocalError>>;
+
+    fn into_output(result: Result<T, Self>) -> Self::Output {
+        result.map_err(CallError::Transport)
     }
 }
 

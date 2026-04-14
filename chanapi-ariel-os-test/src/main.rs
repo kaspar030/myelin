@@ -70,10 +70,10 @@ async fn client_task_1() {
     let casual = casual_client!();
     let formal = formal_client!();
 
-    let g1 = casual.greet("client 1").await.expect("greet failed");
+    let g1 = casual.greet("client 1").await;
     info!("[client 1] casual: {}", g1.as_str());
 
-    let g2 = formal.greet("client 1").await.expect("greet failed");
+    let g2 = formal.greet("client 1").await;
     info!("[client 1] formal: {}", g2.as_str());
 
     info!("[client 1] done.");
@@ -88,10 +88,10 @@ async fn client_task_2() {
     let casual = casual_client!();
     let formal = formal_client!();
 
-    let g1 = casual.greet("client 2").await.expect("greet failed");
+    let g1 = casual.greet("client 2").await;
     info!("[client 2] casual: {}", g1.as_str());
 
-    let g2 = formal.greet("client 2").await.expect("greet failed");
+    let g2 = formal.greet("client 2").await;
     info!("[client 2] formal: {}", g2.as_str());
 
     info!("[client 2] done.");

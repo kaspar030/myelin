@@ -1,4 +1,4 @@
-//! Error types for chanapi service calls.
+//! Error types and result helpers for chanapi service calls.
 
 use core::fmt;
 
@@ -18,6 +18,33 @@ impl<E: fmt::Display> fmt::Display for CallError<E> {
         match self {
             CallError::Transport(e) => write!(f, "transport error: {e}"),
             CallError::Cancelled => write!(f, "request cancelled by service"),
+        }
+    }
+}
+
+/// Convert a transport `Result<T, E>` into the appropriate user-facing type.
+///
+/// - For `E = Infallible`: returns `T` directly (the call can't fail).
+/// - For other `E`: returns `Result<T, CallError<E>>`.
+///
+/// Used by generated client methods to adapt return types based on transport.
+pub trait TransportResult<T>: Sized {
+    /// The user-facing return type.
+    type Output;
+
+    /// Convert a transport result into the user-facing type.
+    fn into_output(result: Result<T, Self>) -> Self::Output;
+}
+
+// -- Infallible: unwrap directly --
+
+impl<T> TransportResult<T> for core::convert::Infallible {
+    type Output = T;
+
+    fn into_output(result: Result<T, Self>) -> T {
+        match result {
+            Ok(val) => val,
+            Err(inf) => match inf {},
         }
     }
 }
