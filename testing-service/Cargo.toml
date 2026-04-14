@@ -10,4 +10,5 @@ embassy = ["chanapi/embassy", "dep:static_cell"]
 [dependencies]
 chanapi = { path = "../chanapi" }
 heapless = "0.8"
+paste = "1"
 static_cell = { version = "2", optional = true }

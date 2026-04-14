@@ -2653,6 +2653,7 @@ version = "0.1.0"
 dependencies = [
  "chanapi",
  "heapless",
+ "paste",
  "static_cell",
 ]
 

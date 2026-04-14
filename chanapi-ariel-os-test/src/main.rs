@@ -7,20 +7,21 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use testing_service::{GreeterService, greeter_embassy_service, greeter_serve};
 
-// -- Instantiate the greeter service --
-greeter_embassy_service!(CriticalSectionRawMutex, 2);
+// -- Two greeter service instances --
+greeter_embassy_service!(casual, CriticalSectionRawMutex, 2);
+greeter_embassy_service!(formal, CriticalSectionRawMutex, 2);
 
 /// Track how many clients have finished.
 static CLIENTS_DONE: AtomicU8 = AtomicU8::new(0);
 const NUM_CLIENTS: u8 = 2;
 
-// -- Service implementation --
-struct GreeterImpl;
+// -- Casual implementation --
+struct CasualGreeter;
 
-impl GreeterService for GreeterImpl {
+impl GreeterService for CasualGreeter {
     async fn greet(&self, name: &str) -> heapless::String<64> {
         let mut s = heapless::String::new();
-        let _ = s.push_str("Hello, ");
+        let _ = s.push_str("Yo, ");
         let _ = s.push_str(name);
         let _ = s.push_str("!");
         s
@@ -31,27 +32,49 @@ impl GreeterService for GreeterImpl {
     }
 }
 
-// -- Server task --
-#[ariel_os::task(autostart)]
-async fn server_task() {
-    let svc = GreeterImpl;
-    let mut server = greeter_server!();
-    info!("server task started");
-    if let Err(_e) = greeter_serve(&svc, &mut server).await {
-        info!("server error");
+// -- Formal implementation --
+struct FormalGreeter;
+
+impl GreeterService for FormalGreeter {
+    async fn greet(&self, name: &str) -> heapless::String<64> {
+        let mut s = heapless::String::new();
+        let _ = s.push_str("Good day, ");
+        let _ = s.push_str(name);
+        let _ = s.push_str(". How do you do?");
+        s
+    }
+
+    async fn health(&self) -> bool {
+        true
     }
 }
 
-// -- Client task 1 --
+// -- Server tasks --
+#[ariel_os::task(autostart)]
+async fn casual_server_task() {
+    let mut server = casual_server!();
+    info!("casual server started");
+    let _ = greeter_serve(&CasualGreeter, &mut server).await;
+}
+
+#[ariel_os::task(autostart)]
+async fn formal_server_task() {
+    let mut server = formal_server!();
+    info!("formal server started");
+    let _ = greeter_serve(&FormalGreeter, &mut server).await;
+}
+
+// -- Client task 1: uses both services --
 #[ariel_os::task(autostart)]
 async fn client_task_1() {
-    let client = greeter_client!();
+    let casual = casual_client!();
+    let formal = formal_client!();
 
-    let greeting = client.greet("client 1").await.expect("greet failed");
-    info!("[client 1] {}", greeting.as_str());
+    let g1 = casual.greet("client 1").await.expect("greet failed");
+    info!("[client 1] casual: {}", g1.as_str());
 
-    let healthy = client.health().await.expect("health failed");
-    info!("[client 1] healthy: {}", healthy);
+    let g2 = formal.greet("client 1").await.expect("greet failed");
+    info!("[client 1] formal: {}", g2.as_str());
 
     info!("[client 1] done.");
     if CLIENTS_DONE.fetch_add(1, Ordering::AcqRel) + 1 == NUM_CLIENTS {
@@ -59,16 +82,17 @@ async fn client_task_1() {
     }
 }
 
-// -- Client task 2 --
+// -- Client task 2: uses both services --
 #[ariel_os::task(autostart)]
 async fn client_task_2() {
-    let client = greeter_client!();
+    let casual = casual_client!();
+    let formal = formal_client!();
 
-    let greeting = client.greet("client 2").await.expect("greet failed");
-    info!("[client 2] {}", greeting.as_str());
+    let g1 = casual.greet("client 2").await.expect("greet failed");
+    info!("[client 2] casual: {}", g1.as_str());
 
-    let healthy = client.health().await.expect("health failed");
-    info!("[client 2] healthy: {}", healthy);
+    let g2 = formal.greet("client 2").await.expect("greet failed");
+    info!("[client 2] formal: {}", g2.as_str());
 
     info!("[client 2] done.");
     if CLIENTS_DONE.fetch_add(1, Ordering::AcqRel) + 1 == NUM_CLIENTS {
