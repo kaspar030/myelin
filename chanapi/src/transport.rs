@@ -21,7 +21,7 @@ pub trait ClientTransport<Req, Resp> {
     /// This bundles the full lifecycle: acquire reply slot → send request →
     /// await reply. Bundling it lets the transport optimize (e.g., tokio can
     /// create the oneshot and send in one step without exposing the token).
-    fn call(&self, req: Req) -> impl Future<Output = Result<Resp, Self::Error>> + Send;
+    fn call(&self, req: Req) -> impl Future<Output = Result<Resp, Self::Error>>;
 }
 
 /// Server side of a service transport.
@@ -36,12 +36,12 @@ pub trait ServerTransport<Req, Resp> {
     type ReplyToken;
 
     /// Receive the next request and its reply token.
-    fn recv(&mut self) -> impl Future<Output = Result<(Req, Self::ReplyToken), Self::Error>> + Send;
+    fn recv(&mut self) -> impl Future<Output = Result<(Req, Self::ReplyToken), Self::Error>>;
 
     /// Send a response back to the caller.
     fn reply(
         &self,
         token: Self::ReplyToken,
         resp: Resp,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    ) -> impl Future<Output = Result<(), Self::Error>>;
 }

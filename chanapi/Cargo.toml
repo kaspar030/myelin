@@ -7,6 +7,8 @@ edition = "2024"
 default = []
 std = []
 tokio = ["std", "dep:tokio"]
+embassy = ["dep:embassy-sync"]
 
 [dependencies]
 tokio = { version = "1", features = ["sync"], optional = true }
+embassy-sync = { version = "0.7", optional = true }

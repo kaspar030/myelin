@@ -1,0 +1,17 @@
+[package]
+name = "chanapi-ariel-os-test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ariel-os = { path = "build/imports/ariel-os/src/ariel-os", features = [] }
+ariel-os-boards = { path = "build/imports/ariel-os/src/ariel-os-boards" }
+chanapi = { path = "../chanapi", features = ["embassy"] }
+testing-service = { path = "../testing-service" }
+embassy-sync = "0.7"
+heapless = "0.8"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(context, values(any()))',
+] }

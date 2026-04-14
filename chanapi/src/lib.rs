@@ -24,5 +24,8 @@ pub mod transport;
 #[cfg(feature = "tokio")]
 pub mod transport_tokio;
 
+#[cfg(feature = "embassy")]
+pub mod transport_embassy;
+
 pub use error::CallError;
 pub use transport::{ClientTransport, ServerTransport};
