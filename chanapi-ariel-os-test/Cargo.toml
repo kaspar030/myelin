@@ -10,6 +10,7 @@ chanapi = { path = "../chanapi", features = ["embassy"] }
 testing-service = { path = "../testing-service" }
 embassy-sync = "0.7"
 heapless = "0.8"
+static_cell = "2"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

@@ -3,21 +3,17 @@
 #![allow(async_fn_in_trait)]
 
 use ariel_os::debug::{exit, log::info, ExitCode};
-use chanapi::transport_embassy::EmbassyLocal;
+use chanapi::transport_embassy::EmbassyService;
 use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use static_cell::StaticCell;
 use testing_service::{
     GreeterClient, GreeterRequest, GreeterResponse, GreeterService, greeter_serve,
 };
 
-// -- Static transport: 2 callers, channel depth 2 --
-static TRANSPORT: EmbassyLocal<
-    CriticalSectionRawMutex,
-    GreeterRequest,
-    GreeterResponse,
-    2,
-    2,
-> = EmbassyLocal::new();
+// -- The service channel --
+static SERVICE: EmbassyService<CriticalSectionRawMutex, GreeterRequest, GreeterResponse, 2> =
+    EmbassyService::new();
 
 /// Track how many clients have finished.
 static CLIENTS_DONE: AtomicU8 = AtomicU8::new(0);
@@ -44,9 +40,8 @@ impl GreeterService for GreeterImpl {
 #[ariel_os::task(autostart)]
 async fn server_task() {
     let svc = GreeterImpl;
-    let mut server = TRANSPORT.server();
+    let mut server = SERVICE.server();
     info!("server task started");
-    // This runs forever (or until something breaks).
     if let Err(_e) = greeter_serve(&svc, &mut server).await {
         info!("server error");
     }
@@ -55,7 +50,16 @@ async fn server_task() {
 // -- Client task 1 --
 #[ariel_os::task(autostart)]
 async fn client_task_1() {
-    let client = GreeterClient::new(TRANSPORT.client());
+    static CLIENT_CELL: StaticCell<
+        chanapi::transport_embassy::EmbassyClient<
+            CriticalSectionRawMutex,
+            GreeterRequest,
+            GreeterResponse,
+            2,
+        >,
+    > = StaticCell::new();
+    let transport: &'static _ = CLIENT_CELL.init(SERVICE.client());
+    let client = GreeterClient::new(transport);
 
     let greeting = client.greet("client 1").await.expect("greet failed");
     info!("[client 1] {}", greeting.as_str());
@@ -72,7 +76,16 @@ async fn client_task_1() {
 // -- Client task 2 --
 #[ariel_os::task(autostart)]
 async fn client_task_2() {
-    let client = GreeterClient::new(TRANSPORT.client());
+    static CLIENT_CELL: StaticCell<
+        chanapi::transport_embassy::EmbassyClient<
+            CriticalSectionRawMutex,
+            GreeterRequest,
+            GreeterResponse,
+            2,
+        >,
+    > = StaticCell::new();
+    let transport: &'static _ = CLIENT_CELL.init(SERVICE.client());
+    let client = GreeterClient::new(transport);
 
     let greeting = client.greet("client 2").await.expect("greet failed");
     info!("[client 2] {}", greeting.as_str());

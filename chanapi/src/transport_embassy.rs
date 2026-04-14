@@ -1,4 +1,4 @@
-//! Embassy-based local transport: static `Channel` for requests, `Signal` array for replies.
+//! Embassy-based local transport: static `Channel` for requests, per-client `Signal` for replies.
 //!
 //! Moves Rust types directly — no serialization. All storage is static.
 //!
@@ -6,96 +6,62 @@
 //!
 //! ```ignore
 //! use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+//! use static_cell::StaticCell;
 //!
-//! // Static storage for the transport:
-//! static TRANSPORT: EmbassyLocal<CriticalSectionRawMutex, MyReq, MyResp, 4, 8> =
-//!     EmbassyLocal::new();
+//! // The service channel (just requests):
+//! static SERVICE: EmbassyService<CriticalSectionRawMutex, MyReq, MyResp, 4> =
+//!     EmbassyService::new();
 //!
-//! // In client task:
-//! let client = TRANSPORT.client();
+//! // In each client task, create a static client:
+//! static CLIENT: StaticCell<EmbassyClient<CriticalSectionRawMutex, MyReq, MyResp, 4>> =
+//!     StaticCell::new();
+//! let client = CLIENT.init(SERVICE.client());
+//!
 //! // In server task:
-//! let mut server = TRANSPORT.server();
+//! let mut server = SERVICE.server();
 //! ```
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use embassy_sync::channel::Channel;
+use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::signal::Signal;
-
-use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::transport::{ClientTransport, ServerTransport};
 
-/// Static embassy local transport.
+/// The service endpoint — just the request channel.
 ///
-/// - `M`: `RawMutex` implementation (e.g., `CriticalSectionRawMutex`)
+/// Place this in a `static`. Clients and server borrow from it.
+///
+/// - `M`: `RawMutex` implementation
 /// - `Req`: request enum
 /// - `Resp`: response enum
-/// - `MAX_CALLERS`: number of concurrent reply slots (pre-allocated)
 /// - `CHANNEL_DEPTH`: depth of the request channel
-pub struct EmbassyLocal<M: RawMutex, Req, Resp, const MAX_CALLERS: usize, const CHANNEL_DEPTH: usize>
-{
-    /// Request channel: carries (request, reply_slot_index).
-    requests: Channel<M, (Req, u8), CHANNEL_DEPTH>,
-    /// Pre-allocated reply signals, one per caller slot.
-    replies: [Signal<M, Resp>; MAX_CALLERS],
-    /// Bitmask of free reply slots (supports up to 8 callers).
-    free_slots: AtomicU8,
+pub struct EmbassyService<M: RawMutex + 'static, Req, Resp: 'static, const CHANNEL_DEPTH: usize> {
+    requests: Channel<M, (Req, &'static Signal<M, Resp>), CHANNEL_DEPTH>,
 }
 
-impl<M: RawMutex, Req, Resp, const MAX_CALLERS: usize, const CHANNEL_DEPTH: usize>
-    EmbassyLocal<M, Req, Resp, MAX_CALLERS, CHANNEL_DEPTH>
+impl<M: RawMutex + 'static, Req, Resp: 'static, const CHANNEL_DEPTH: usize>
+    EmbassyService<M, Req, Resp, CHANNEL_DEPTH>
 {
-    /// Create a new transport. All storage is inline — use in a `static`.
+    /// Create a new service channel. Use in a `static`.
     pub const fn new() -> Self {
-        assert!(MAX_CALLERS <= 8, "MAX_CALLERS must be <= 8");
-        assert!(CHANNEL_DEPTH >= 1, "CHANNEL_DEPTH must be >= 1");
-        assert!(
-            CHANNEL_DEPTH <= MAX_CALLERS,
-            "CHANNEL_DEPTH must be <= MAX_CALLERS (there can never be more in-flight requests than callers)"
-        );
         Self {
             requests: Channel::new(),
-            replies: [const { Signal::new() }; MAX_CALLERS],
-            // All slots free: lower MAX_CALLERS bits set.
-            free_slots: AtomicU8::new((1u8 << MAX_CALLERS as u8) - 1),
         }
     }
 
-    /// Get a client handle (cheap reference, can be copied/shared).
-    pub fn client(&self) -> EmbassyClient<'_, M, Req, Resp, MAX_CALLERS, CHANNEL_DEPTH> {
-        EmbassyClient { transport: self }
+    /// Create a client. The returned client must be placed in a `StaticCell`
+    /// (or other `'static` storage) before use, because it contains the
+    /// reply `Signal` that the server writes into.
+    pub fn client(&self) -> EmbassyClient<'_, M, Req, Resp, CHANNEL_DEPTH> {
+        EmbassyClient {
+            sender: self.requests.sender(),
+            reply: Signal::new(),
+        }
     }
 
     /// Get a server handle.
-    pub fn server(&self) -> EmbassyServer<'_, M, Req, Resp, MAX_CALLERS, CHANNEL_DEPTH> {
+    pub fn server(&self) -> EmbassyServer<'_, M, Req, Resp, CHANNEL_DEPTH> {
         EmbassyServer { transport: self }
-    }
-
-    /// Try to acquire a free reply slot. Returns the slot index.
-    fn acquire_slot(&self) -> Option<u8> {
-        loop {
-            let free = self.free_slots.load(Ordering::Acquire);
-            if free == 0 {
-                return None;
-            }
-            let slot = free.trailing_zeros() as u8;
-            let mask = 1u8 << slot;
-            if self
-                .free_slots
-                .compare_exchange_weak(free, free & !mask, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-            {
-                // Reset the signal so we don't see a stale value.
-                self.replies[slot as usize].reset();
-                return Some(slot);
-            }
-        }
-    }
-
-    /// Release a reply slot back to the pool.
-    fn release_slot(&self, slot: u8) {
-        let mask = 1u8 << slot;
-        self.free_slots.fetch_or(mask, Ordering::Release);
     }
 }
 
@@ -104,101 +70,89 @@ impl<M: RawMutex, Req, Resp, const MAX_CALLERS: usize, const CHANNEL_DEPTH: usiz
 /// Errors from the embassy local transport.
 #[derive(Debug)]
 pub enum EmbassyLocalError {
-    /// No reply slots available (all MAX_CALLERS are in use).
-    NoReplySlot,
+    // Currently infallible for local transport, but reserved for future use.
 }
 
 impl core::fmt::Display for EmbassyLocalError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            EmbassyLocalError::NoReplySlot => write!(f, "no reply slot available"),
-        }
+    fn fmt(&self, _f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        Ok(())
     }
 }
 
 // -- Client --
 
-/// Client handle to an embassy local transport.
-pub struct EmbassyClient<
-    'a,
-    M: RawMutex,
-    Req,
-    Resp,
-    const MAX_CALLERS: usize,
-    const CHANNEL_DEPTH: usize,
-> {
-    transport: &'a EmbassyLocal<M, Req, Resp, MAX_CALLERS, CHANNEL_DEPTH>,
+/// Client handle to an embassy service.
+///
+/// Each client owns its own reply `Signal`. Must live at a `'static` address
+/// (e.g., in a `StaticCell`) because a reference to the signal is sent
+/// through the channel with each request.
+pub struct EmbassyClient<'a, M: RawMutex + 'static, Req, Resp: 'static, const CHANNEL_DEPTH: usize> {
+    sender: Sender<'a, M, (Req, &'static Signal<M, Resp>), CHANNEL_DEPTH>,
+    reply: Signal<M, Resp>,
 }
 
-// Manually implement Clone/Copy since derive can't handle the generics easily.
-impl<'a, M: RawMutex, Req, Resp, const MAX_CALLERS: usize, const CHANNEL_DEPTH: usize> Clone
-    for EmbassyClient<'a, M, Req, Resp, MAX_CALLERS, CHANNEL_DEPTH>
-{
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<'a, M: RawMutex, Req, Resp, const MAX_CALLERS: usize, const CHANNEL_DEPTH: usize> Copy
-    for EmbassyClient<'a, M, Req, Resp, MAX_CALLERS, CHANNEL_DEPTH>
-{
-}
-
-impl<'a, M: RawMutex, Req, Resp, const MAX_CALLERS: usize, const CHANNEL_DEPTH: usize>
-    ClientTransport<Req, Resp> for EmbassyClient<'a, M, Req, Resp, MAX_CALLERS, CHANNEL_DEPTH>
+impl<'a, M: RawMutex + 'static, Req, Resp: 'static, const CHANNEL_DEPTH: usize>
+    ClientTransport<Req, Resp> for EmbassyClient<'a, M, Req, Resp, CHANNEL_DEPTH>
 {
     type Error = EmbassyLocalError;
 
     async fn call(&self, req: Req) -> Result<Resp, Self::Error> {
-        let slot = self
-            .transport
-            .acquire_slot()
-            .ok_or(EmbassyLocalError::NoReplySlot)?;
+        // Reset the signal so we don't see a stale value.
+        self.reply.reset();
 
-        // Send request with reply slot index.
-        self.transport.requests.send((req, slot)).await;
+        // SAFETY: The caller guarantees this client lives in `'static` storage
+        // (e.g., StaticCell). The signal reference is valid for the duration of
+        // the request because we block on wait() below — the client cannot be
+        // dropped while in-flight.
+        let signal_ref: &'static Signal<M, Resp> =
+            unsafe { core::mem::transmute::<&Signal<M, Resp>, &'static Signal<M, Resp>>(&self.reply) };
 
-        // Await the reply.
-        let resp = self.transport.replies[slot as usize].wait().await;
+        // Send request with our reply signal.
+        self.sender.send((req, signal_ref)).await;
 
-        // Release the slot.
-        self.transport.release_slot(slot);
+        // Wait for the server to signal our reply.
+        let resp = self.reply.wait().await;
 
         Ok(resp)
     }
 }
 
-// -- Server --
-
-/// Server handle to an embassy local transport.
-pub struct EmbassyServer<
-    'a,
-    M: RawMutex,
-    Req,
-    Resp,
-    const MAX_CALLERS: usize,
-    const CHANNEL_DEPTH: usize,
-> {
-    transport: &'a EmbassyLocal<M, Req, Resp, MAX_CALLERS, CHANNEL_DEPTH>,
-}
-
-/// Reply token for embassy transport — just the slot index.
-pub struct EmbassyReplyToken(u8);
-
-impl<'a, M: RawMutex, Req, Resp, const MAX_CALLERS: usize, const CHANNEL_DEPTH: usize>
-    ServerTransport<Req, Resp>
-    for EmbassyServer<'a, M, Req, Resp, MAX_CALLERS, CHANNEL_DEPTH>
+// Delegate for &EmbassyClient so GreeterClient<&'static EmbassyClient<...>> works.
+impl<'a, M: RawMutex + 'static, Req, Resp: 'static, const CHANNEL_DEPTH: usize>
+    ClientTransport<Req, Resp> for &EmbassyClient<'a, M, Req, Resp, CHANNEL_DEPTH>
 {
     type Error = EmbassyLocalError;
-    type ReplyToken = EmbassyReplyToken;
+
+    async fn call(&self, req: Req) -> Result<Resp, Self::Error> {
+        EmbassyClient::call(self, req).await
+    }
+}
+
+// -- Server --
+
+/// Server handle to an embassy service.
+pub struct EmbassyServer<'a, M: RawMutex + 'static, Req, Resp: 'static, const CHANNEL_DEPTH: usize> {
+    transport: &'a EmbassyService<M, Req, Resp, CHANNEL_DEPTH>,
+}
+
+/// Reply token for embassy transport — a reference to the caller's signal.
+pub struct EmbassyReplyToken<M: RawMutex + 'static, Resp: 'static> {
+    signal: &'static Signal<M, Resp>,
+}
+
+impl<'a, M: RawMutex + 'static, Req, Resp: 'static, const CHANNEL_DEPTH: usize> ServerTransport<Req, Resp>
+    for EmbassyServer<'a, M, Req, Resp, CHANNEL_DEPTH>
+{
+    type Error = EmbassyLocalError;
+    type ReplyToken = EmbassyReplyToken<M, Resp>;
 
     async fn recv(&mut self) -> Result<(Req, Self::ReplyToken), Self::Error> {
-        let (req, slot) = self.transport.requests.receive().await;
-        Ok((req, EmbassyReplyToken(slot)))
+        let (req, signal) = self.transport.requests.receive().await;
+        Ok((req, EmbassyReplyToken { signal }))
     }
 
     async fn reply(&self, token: Self::ReplyToken, resp: Resp) -> Result<(), Self::Error> {
-        self.transport.replies[token.0 as usize].signal(resp);
+        token.signal.signal(resp);
         Ok(())
     }
 }

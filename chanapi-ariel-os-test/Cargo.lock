@@ -498,6 +498,7 @@ dependencies = [
  "chanapi",
  "embassy-sync 0.7.2",
  "heapless",
+ "static_cell",
  "testing-service",
 ]
 
