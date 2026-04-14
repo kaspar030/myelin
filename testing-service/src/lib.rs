@@ -10,6 +10,11 @@
 use chanapi::transport::{ClientTransport, ServerTransport};
 use chanapi::CallError;
 
+// Re-export for macro use.
+#[cfg(feature = "embassy")]
+#[doc(hidden)]
+pub use static_cell;
+
 // ===== The trait (source of truth) =====
 
 // #[chanapi::service]
@@ -79,17 +84,63 @@ where
     }
 }
 
-// -- Embassy convenience type aliases (what the macro would generate) --
+// -- Embassy convenience types (what the macro would generate) --
 
 #[cfg(feature = "embassy")]
-/// Type alias for the embassy service endpoint for the Greeter service.
+/// Type alias for the embassy service endpoint.
 pub type GreeterEmbassyService<M, const CHANNEL_DEPTH: usize> =
     chanapi::transport_embassy::EmbassyService<M, GreeterRequest, GreeterResponse, CHANNEL_DEPTH>;
 
 #[cfg(feature = "embassy")]
-/// Type alias for the embassy client transport for the Greeter service.
+/// Type alias for the embassy client transport.
 pub type GreeterEmbassyClientTransport<'a, M, const CHANNEL_DEPTH: usize> =
     chanapi::transport_embassy::EmbassyClient<'a, M, GreeterRequest, GreeterResponse, CHANNEL_DEPTH>;
+
+/// Instantiate a Greeter embassy service and generate helper macros.
+///
+/// Creates:
+/// - `static $name: GreeterEmbassyService<$mutex, $depth>`
+/// - `macro $client_macro!()` — creates a `GreeterClient` connected to the service
+/// - `macro $server_macro!()` — creates a server handle for the dispatch loop
+///
+/// # Example
+///
+/// ```ignore
+/// greeter_embassy_service!(GREETER, CriticalSectionRawMutex, 2);
+///
+/// // In client tasks:
+/// let client = greeter_client!();
+///
+/// // In server task:
+/// let mut server = greeter_server!();
+/// greeter_serve(&my_impl, &mut server).await;
+/// ```
+#[cfg(feature = "embassy")]
+#[macro_export]
+macro_rules! greeter_embassy_service {
+    ($name:ident, $mutex:ty, $depth:expr) => {
+        static $name: $crate::GreeterEmbassyService<$mutex, $depth> =
+            $crate::GreeterEmbassyService::new();
+
+        /// Connect a client to the greeter service. Call once per task.
+        /// Allocates a static reply signal internally.
+        macro_rules! greeter_client {
+            () => {{
+                static CELL: $crate::static_cell::StaticCell<
+                    $crate::GreeterEmbassyClientTransport<'static, $mutex, $depth>,
+                > = $crate::static_cell::StaticCell::new();
+                $crate::GreeterClient::new(&*CELL.init($name.client()))
+            }};
+        }
+
+        /// Get a server handle for the greeter service dispatch loop.
+        macro_rules! greeter_server {
+            () => {
+                $name.server()
+            };
+        }
+    };
+}
 
 // -- Service implementation trait --
 

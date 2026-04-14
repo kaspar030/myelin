@@ -5,14 +5,10 @@
 use ariel_os::debug::{exit, log::info, ExitCode};
 use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use static_cell::StaticCell;
-use testing_service::{
-    GreeterClient, GreeterEmbassyClientTransport, GreeterEmbassyService, GreeterService,
-    greeter_serve,
-};
+use testing_service::{GreeterService, greeter_embassy_service, greeter_serve};
 
-// -- The service channel --
-static SERVICE: GreeterEmbassyService<CriticalSectionRawMutex, 2> = GreeterEmbassyService::new();
+// -- Instantiate the greeter service --
+greeter_embassy_service!(GREETER, CriticalSectionRawMutex, 2);
 
 /// Track how many clients have finished.
 static CLIENTS_DONE: AtomicU8 = AtomicU8::new(0);
@@ -39,7 +35,7 @@ impl GreeterService for GreeterImpl {
 #[ariel_os::task(autostart)]
 async fn server_task() {
     let svc = GreeterImpl;
-    let mut server = SERVICE.server();
+    let mut server = greeter_server!();
     info!("server task started");
     if let Err(_e) = greeter_serve(&svc, &mut server).await {
         info!("server error");
@@ -49,9 +45,7 @@ async fn server_task() {
 // -- Client task 1 --
 #[ariel_os::task(autostart)]
 async fn client_task_1() {
-    static CELL: StaticCell<GreeterEmbassyClientTransport<CriticalSectionRawMutex, 2>> =
-        StaticCell::new();
-    let client = GreeterClient::new(&*CELL.init(SERVICE.client()));
+    let client = greeter_client!();
 
     let greeting = client.greet("client 1").await.expect("greet failed");
     info!("[client 1] {}", greeting.as_str());
@@ -68,9 +62,7 @@ async fn client_task_1() {
 // -- Client task 2 --
 #[ariel_os::task(autostart)]
 async fn client_task_2() {
-    static CELL: StaticCell<GreeterEmbassyClientTransport<CriticalSectionRawMutex, 2>> =
-        StaticCell::new();
-    let client = GreeterClient::new(&*CELL.init(SERVICE.client()));
+    let client = greeter_client!();
 
     let greeting = client.greet("client 2").await.expect("greet failed");
     info!("[client 2] {}", greeting.as_str());
