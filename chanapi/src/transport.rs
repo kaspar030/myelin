@@ -12,6 +12,13 @@ use core::future::Future;
 ///
 /// The generated client struct holds an impl of this and delegates each
 /// method call through it.
+///
+/// # Cancel Safety
+///
+/// Implementations must ensure that dropping the future returned by [`call`](Self::call)
+/// at any `.await` point does not corrupt the transport or leak state. The server
+/// may do wasted work if a request was already sent, but the client must be
+/// reusable immediately after cancellation.
 pub trait ClientTransport<Req, Resp> {
     /// Transport-specific error.
     type Error;
@@ -21,6 +28,10 @@ pub trait ClientTransport<Req, Resp> {
     /// This bundles the full lifecycle: acquire reply slot → send request →
     /// await reply. Bundling it lets the transport optimize (e.g., tokio can
     /// create the oneshot and send in one step without exposing the token).
+    ///
+    /// # Cancel Safety
+    ///
+    /// Must be cancel-safe. See the trait-level documentation.
     fn call(&self, req: Req) -> impl Future<Output = Result<Resp, Self::Error>>;
 }
 

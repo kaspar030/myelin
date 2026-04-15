@@ -58,6 +58,17 @@ where
 {
     type Error = TokioLocalError;
 
+    /// # Cancel Safety
+    ///
+    /// This future can be safely dropped at any `.await` point:
+    ///
+    /// - **Before `send` completes:** The oneshot pair is dropped, no request
+    ///   was enqueued. No effect.
+    /// - **After `send`, before `rx.await` completes:** The request is in the
+    ///   mpsc channel. The server will process it and call
+    ///   `oneshot::Sender::send()`, which returns `Err` (receiver dropped).
+    ///   The server observes this and discards the response. Wasted work but
+    ///   no corruption.
     async fn call(&self, req: Req) -> Result<Resp, Self::Error> {
         let (tx, rx) = oneshot::channel();
         self.tx

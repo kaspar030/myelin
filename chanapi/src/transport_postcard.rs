@@ -114,6 +114,11 @@ where
 {
     type Error = PostcardStreamError;
 
+    /// # Cancel Safety
+    ///
+    /// This transport uses blocking I/O — the async functions resolve
+    /// immediately and never yield. There are no `.await` cancel points,
+    /// so cancellation cannot occur mid-call.
     async fn call(&self, req: Req) -> Result<Resp, Self::Error> {
         let mut inner = self.inner.borrow_mut();
         inner.send(&req)?;

@@ -37,6 +37,16 @@ impl<'a, M: RawMutex + 'static, Req, Resp: 'static, const CHANNEL_DEPTH: usize>
 {
     type Error = Infallible;
 
+    /// # Cancel Safety
+    ///
+    /// This future can be safely dropped at any `.await` point:
+    ///
+    /// - **Before `send` completes:** The signal was reset but no request was
+    ///   enqueued. The next call will reset again. No effect.
+    /// - **After `send`, before `wait` completes:** The server will process
+    ///   the request and signal the reply, but nobody reads it. On the next
+    ///   call, `reset()` clears the stale value. The server does wasted work
+    ///   but no state is corrupted.
     async fn call(&self, req: Req) -> Result<Resp, Self::Error> {
         self.reply.reset();
 
