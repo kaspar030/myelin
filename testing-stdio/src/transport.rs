@@ -1,16 +1,16 @@
-//! Postcard + COBS transport over any `Read + Write` stream.
+//! Postcard transport over any `Read + Write` stream.
 //!
-//! Serializes requests/responses with postcard, frames with COBS (0x00 sentinel).
+//! Serializes requests/responses with postcard, uses length-prefix framing
+//! (4-byte little-endian u32 length, then payload).
 //! Works over stdio, TCP, serial — anything implementing `std::io::Read + Write`.
 
 use std::cell::RefCell;
 use std::io::{self, Read, Write};
 
 use chanapi::transport::{ClientTransport, ServerTransport};
-use postcard::accumulator::{CobsAccumulator, FeedResult};
 use serde::{Deserialize, Serialize};
 
-/// Postcard + COBS transport over a byte stream.
+/// Postcard transport over a byte stream with length-prefix framing.
 ///
 /// Generic over the read/write halves and the message types.
 pub struct PostcardStream<R, W, Incoming, Outgoing> {
@@ -21,7 +21,6 @@ pub struct PostcardStream<R, W, Incoming, Outgoing> {
 struct PostcardStreamInner<R, W> {
     reader: R,
     writer: W,
-    accumulator: CobsAccumulator<256>,
 }
 
 /// Errors from the postcard stream transport.
@@ -59,21 +58,21 @@ where
 {
     pub fn new(reader: R, writer: W) -> Self {
         Self {
-            inner: RefCell::new(PostcardStreamInner {
-                reader,
-                writer,
-                accumulator: CobsAccumulator::new(),
-            }),
+            inner: RefCell::new(PostcardStreamInner { reader, writer }),
             _phantom: core::marker::PhantomData,
         }
     }
 }
 
 impl<R: Read, W: Write> PostcardStreamInner<R, W> {
-    /// Send a message (serialize + COBS frame + write).
+    /// Send a message: serialize with postcard, write [u32 LE length][payload].
     fn send<T: Serialize>(&mut self, msg: &T) -> Result<(), PostcardStreamError> {
         let bytes =
-            postcard::to_stdvec_cobs(msg).map_err(PostcardStreamError::Postcard)?;
+            postcard::to_stdvec(msg).map_err(PostcardStreamError::Postcard)?;
+        let len = bytes.len() as u32;
+        self.writer
+            .write_all(&len.to_le_bytes())
+            .map_err(PostcardStreamError::Io)?;
         self.writer
             .write_all(&bytes)
             .map_err(PostcardStreamError::Io)?;
@@ -81,34 +80,26 @@ impl<R: Read, W: Write> PostcardStreamInner<R, W> {
         Ok(())
     }
 
-    /// Receive a message (read bytes + COBS deframe + deserialize).
+    /// Receive a message: read [u32 LE length][payload], deserialize with postcard.
     fn receive<T: for<'de> Deserialize<'de>>(&mut self) -> Result<T, PostcardStreamError> {
-        let mut buf = [0u8; 1];
-        loop {
-            let n = self
-                .reader
-                .read(&mut buf)
-                .map_err(PostcardStreamError::Io)?;
-            if n == 0 {
+        // Read length prefix.
+        let mut len_buf = [0u8; 4];
+        match self.reader.read_exact(&mut len_buf) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
                 return Err(PostcardStreamError::Closed);
             }
-            match self.accumulator.feed::<T>(&buf[..n]) {
-                FeedResult::Consumed => continue,
-                FeedResult::OverFull(_) => {
-                    return Err(PostcardStreamError::Postcard(
-                        postcard::Error::DeserializeBadEncoding,
-                    ));
-                }
-                FeedResult::DeserError(_) => {
-                    return Err(PostcardStreamError::Postcard(
-                        postcard::Error::DeserializeBadEncoding,
-                    ));
-                }
-                FeedResult::Success { data, .. } => {
-                    return Ok(data);
-                }
-            }
+            Err(e) => return Err(PostcardStreamError::Io(e)),
         }
+        let len = u32::from_le_bytes(len_buf) as usize;
+
+        // Read payload.
+        let mut buf = vec![0u8; len];
+        self.reader
+            .read_exact(&mut buf)
+            .map_err(PostcardStreamError::Io)?;
+
+        postcard::from_bytes(&buf).map_err(PostcardStreamError::Postcard)
     }
 }
 
