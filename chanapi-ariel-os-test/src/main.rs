@@ -5,7 +5,10 @@
 use ariel_os::debug::{ExitCode, exit, log::info};
 use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use testing_service::{GreeterService, greeter_embassy_service, greeter_serve};
+use testing_service::{
+    GreeterService, GreeterServiceSync, greeter_embassy_service, greeter_serve,
+    greeter_serve_sync,
+};
 
 // -- Two greeter service instances --
 greeter_embassy_service!(casual, CriticalSectionRawMutex, 3);
@@ -15,7 +18,15 @@ greeter_embassy_service!(formal, CriticalSectionRawMutex, 3);
 static CLIENTS_DONE: AtomicU8 = AtomicU8::new(0);
 const NUM_CLIENTS: u8 = 3;
 
-// -- Casual implementation --
+/// Ariel OS thread `BlockOn` adapter.
+struct ThreadBlockOn;
+impl chanapi::BlockOn for ThreadBlockOn {
+    fn block_on<F: core::future::Future>(&self, fut: F) -> F::Output {
+        ariel_os::thread::block_on(fut)
+    }
+}
+
+// -- Casual implementation (async, runs in a task) --
 struct CasualGreeter;
 
 impl GreeterService for CasualGreeter {
@@ -32,11 +43,11 @@ impl GreeterService for CasualGreeter {
     }
 }
 
-// -- Formal implementation --
+// -- Formal implementation (sync, runs in a thread) --
 struct FormalGreeter;
 
-impl GreeterService for FormalGreeter {
-    async fn greet(&self, name: &str) -> heapless::String<64> {
+impl GreeterServiceSync for FormalGreeter {
+    fn greet(&self, name: &str) -> heapless::String<64> {
         let mut s = heapless::String::new();
         let _ = s.push_str("Good day, ");
         let _ = s.push_str(name);
@@ -44,24 +55,25 @@ impl GreeterService for FormalGreeter {
         s
     }
 
-    async fn health(&self) -> bool {
+    fn health(&self) -> bool {
         true
     }
 }
 
-// -- Server tasks --
+// -- Casual server: async task --
 #[ariel_os::task(autostart)]
 async fn casual_server_task() {
     let mut server = casual_server!();
-    info!("casual server started");
+    info!("casual server started (async task)");
     let _ = greeter_serve(&CasualGreeter, &mut server).await;
 }
 
-#[ariel_os::task(autostart)]
-async fn formal_server_task() {
+// -- Formal server: sync thread --
+#[ariel_os::thread(autostart)]
+fn formal_server_thread() {
     let mut server = formal_server!();
-    info!("formal server started");
-    let _ = greeter_serve(&FormalGreeter, &mut server).await;
+    info!("formal server started (sync thread)");
+    let _ = greeter_serve_sync(&FormalGreeter, &mut server, &ThreadBlockOn);
 }
 
 // -- Client task 1: uses both services --
@@ -100,18 +112,9 @@ async fn client_task_2() {
     }
 }
 
+// -- Client thread: sync, uses casual service --
 #[ariel_os::thread(autostart)]
 fn client_thread() {
-    use ariel_os::thread;
-
-    /// Ariel OS thread `BlockOn` adapter.
-    struct ThreadBlockOn;
-    impl chanapi::BlockOn for ThreadBlockOn {
-        fn block_on<F: core::future::Future>(&self, fut: F) -> F::Output {
-            thread::block_on(fut)
-        }
-    }
-
     let client = casual_client_sync!(ThreadBlockOn);
 
     let g = client.greet("thread");

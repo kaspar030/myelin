@@ -204,16 +204,23 @@ macro_rules! greeter_embassy_service {
     };
 }
 
-// -- Service implementation trait --
+// -- Service implementation traits --
 
+/// Async service trait — implement this for async server tasks.
 pub trait GreeterService {
     async fn greet(&self, name: &str) -> heapless::String<64>;
     async fn health(&self) -> bool;
 }
 
+/// Sync service trait — implement this for blocking server threads.
+pub trait GreeterServiceSync {
+    fn greet(&self, name: &str) -> heapless::String<64>;
+    fn health(&self) -> bool;
+}
+
 // -- Server dispatch --
 
-/// Run the service loop: receive requests, dispatch to the implementation,
+/// Run the async service loop: receive requests, dispatch to the implementation,
 /// send responses.
 pub async fn greeter_serve<S, T>(svc: &S, transport: &mut T) -> Result<(), T::Error>
 where
@@ -229,5 +236,27 @@ where
             GreeterRequest::Health => GreeterResponse::Health(svc.health().await),
         };
         let _ = transport.reply(token, resp).await;
+    }
+}
+
+/// Run the sync service loop: uses `BlockOn` for transport operations,
+/// calls sync service methods directly.
+///
+/// Suitable for running a service in a thread.
+pub fn greeter_serve_sync<S, T, B>(svc: &S, transport: &mut T, block_on: &B) -> Result<(), T::Error>
+where
+    S: GreeterServiceSync,
+    T: ServerTransport<GreeterRequest, GreeterResponse>,
+    B: chanapi::BlockOn,
+{
+    loop {
+        let (req, token) = block_on.block_on(transport.recv())?;
+        let resp = match req {
+            GreeterRequest::Greet { name } => {
+                GreeterResponse::Greet(svc.greet(name.as_str()))
+            }
+            GreeterRequest::Health => GreeterResponse::Health(svc.health()),
+        };
+        let _ = block_on.block_on(transport.reply(token, resp));
     }
 }
