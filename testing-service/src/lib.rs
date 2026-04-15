@@ -29,11 +29,15 @@ pub use paste;
 
 // -- Request / Response enums --
 
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum GreeterRequest {
     Greet { name: heapless::String<64> },
     Health,
 }
 
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum GreeterResponse {
     Greet(heapless::String<64>),
     Health(bool),

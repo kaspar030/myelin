@@ -1,4 +1,4 @@
 [workspace]
-members = ["chanapi", "chanapi-macros", "testing", "testing-service"]
+members = ["chanapi", "chanapi-macros", "testing", "testing-service", "testing-stdio"]
 exclude = ["chanapi-ariel-os-test"]
 resolver = "2"
