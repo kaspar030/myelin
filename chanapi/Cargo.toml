@@ -8,7 +8,10 @@ default = []
 std = []
 tokio = ["std", "dep:tokio"]
 embassy = ["dep:embassy-sync"]
+postcard = ["std", "dep:postcard", "dep:serde"]
 
 [dependencies]
 tokio = { version = "1", features = ["sync"], optional = true }
 embassy-sync = { version = "0.7", optional = true }
+postcard = { version = "1", features = ["use-std"], optional = true }
+serde = { version = "1", optional = true }

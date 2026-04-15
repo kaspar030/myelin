@@ -40,6 +40,8 @@ name = "chanapi"
 version = "0.1.0"
 dependencies = [
  "embassy-sync",
+ "postcard",
+ "serde",
  "tokio",
 ]
 
@@ -408,8 +410,6 @@ version = "0.1.0"
 dependencies = [
  "chanapi",
  "heapless 0.8.0",
- "postcard",
- "serde",
  "testing-service",
 ]
 

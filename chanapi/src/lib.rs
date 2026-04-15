@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 //! # chanapi
 //!
@@ -28,6 +28,9 @@ pub mod transport_tokio;
 
 #[cfg(feature = "embassy")]
 pub mod transport_embassy;
+
+#[cfg(feature = "postcard")]
+pub mod transport_postcard;
 
 pub use block_on::BlockOn;
 pub use error::{CallError, TransportResult};

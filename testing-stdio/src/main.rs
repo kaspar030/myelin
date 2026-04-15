@@ -1,15 +1,13 @@
 //! Test binary: greeter service over stdio with postcard serialization.
 //!
 //! - `testing-stdio server` — runs the greeter server, reads requests from stdin,
-//!   writes responses to stdout (postcard + COBS framing).
+//!   writes responses to stdout (postcard + length-prefix framing).
 //! - `testing-stdio` — spawns itself as a server subprocess and acts as a client.
 
-mod transport;
-
+use chanapi::transport_postcard::PostcardStream;
 use testing_service::{
     GreeterRequest, GreeterResponse, GreeterServiceSync, greeter_serve_sync,
 };
-use transport::PostcardStream;
 
 // -- Service implementation --
 struct GreeterImpl;

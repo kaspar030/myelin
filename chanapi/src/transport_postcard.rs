@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 use std::io::{self, Read, Write};
 
-use chanapi::transport::{ClientTransport, ServerTransport};
+use crate::transport::{ClientTransport, ServerTransport};
 use serde::{Deserialize, Serialize};
 
 /// Postcard transport over a byte stream with length-prefix framing.
@@ -43,11 +43,11 @@ impl core::fmt::Display for PostcardStreamError {
 }
 
 // TransportResult: any T wrapped in Result<T, CallError<PostcardStreamError>>
-impl<T> chanapi::TransportResult<T> for PostcardStreamError {
-    type Output = Result<T, chanapi::CallError<PostcardStreamError>>;
+impl<T> crate::TransportResult<T> for PostcardStreamError {
+    type Output = Result<T, crate::CallError<PostcardStreamError>>;
 
     fn into_output(result: Result<T, Self>) -> Self::Output {
-        result.map_err(chanapi::CallError::Transport)
+        result.map_err(crate::CallError::Transport)
     }
 }
 

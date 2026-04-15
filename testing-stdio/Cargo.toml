@@ -4,8 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chanapi = { path = "../chanapi" }
+chanapi = { path = "../chanapi", features = ["postcard"] }
 testing-service = { path = "../testing-service", features = ["serde"] }
-postcard = { version = "1", features = ["use-std"] }
-serde = { version = "1", features = ["derive"] }
 heapless = "0.8"
