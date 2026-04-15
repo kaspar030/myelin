@@ -11,7 +11,7 @@ use testing_service::{
 };
 
 // -- Two greeter service instances --
-greeter_embassy_service!(casual, CriticalSectionRawMutex, 3);
+greeter_embassy_service!(casual, CriticalSectionRawMutex, 4);
 greeter_embassy_service!(formal, CriticalSectionRawMutex, 3);
 
 /// Track how many clients have finished.
@@ -26,15 +26,20 @@ impl chanapi::BlockOn for ThreadBlockOn {
     }
 }
 
-// -- Casual implementation (async, runs in a task) --
-struct CasualGreeter;
+// -- Casual implementation: parameterized with a server ID --
+struct CasualGreeter {
+    id: u8,
+}
 
 impl GreeterService for CasualGreeter {
     async fn greet(&self, name: &str) -> heapless::String<64> {
         let mut s = heapless::String::new();
         let _ = s.push_str("Yo, ");
         let _ = s.push_str(name);
-        let _ = s.push_str("!");
+        let _ = s.push_str("! (server ");
+        // Append server id as a digit.
+        let _ = s.push(char::from(b'0' + self.id));
+        let _ = s.push(')');
         s
     }
 
@@ -60,12 +65,20 @@ impl GreeterServiceSync for FormalGreeter {
     }
 }
 
-// -- Casual server: async task --
+// -- Casual server 1: async task (MPMC — shares the same channel) --
 #[ariel_os::task(autostart)]
-async fn casual_server_task() {
+async fn casual_server_1() {
     let mut server = casual_server!();
-    info!("casual server started (async task)");
-    let _ = greeter_serve(&CasualGreeter, &mut server).await;
+    info!("casual server 1 started");
+    let _ = greeter_serve(&CasualGreeter { id: 1 }, &mut server).await;
+}
+
+// -- Casual server 2: async task (MPMC — shares the same channel) --
+#[ariel_os::task(autostart)]
+async fn casual_server_2() {
+    let mut server = casual_server!();
+    info!("casual server 2 started");
+    let _ = greeter_serve(&CasualGreeter { id: 2 }, &mut server).await;
 }
 
 // -- Formal server: sync thread --
@@ -82,11 +95,16 @@ async fn client_task_1() {
     let casual = casual_client!();
     let formal = formal_client!();
 
-    let g1 = casual.greet("client 1").await;
-    info!("[client 1] casual: {}", g1.as_str());
+    for i in 0..3u8 {
+        let mut name = heapless::String::<16>::new();
+        let _ = name.push_str("c1-");
+        let _ = name.push(char::from(b'0' + i));
+        let g = casual.greet(name.as_str()).await;
+        info!("[client 1] {}", g.as_str());
+    }
 
-    let g2 = formal.greet("client 1").await;
-    info!("[client 1] formal: {}", g2.as_str());
+    let g = formal.greet("client 1").await;
+    info!("[client 1] formal: {}", g.as_str());
 
     info!("[client 1] done.");
     if CLIENTS_DONE.fetch_add(1, Ordering::AcqRel) + 1 == NUM_CLIENTS {
@@ -100,11 +118,16 @@ async fn client_task_2() {
     let casual = casual_client!();
     let formal = formal_client!();
 
-    let g1 = casual.greet("client 2").await;
-    info!("[client 2] casual: {}", g1.as_str());
+    for i in 0..3u8 {
+        let mut name = heapless::String::<16>::new();
+        let _ = name.push_str("c2-");
+        let _ = name.push(char::from(b'0' + i));
+        let g = casual.greet(name.as_str()).await;
+        info!("[client 2] {}", g.as_str());
+    }
 
-    let g2 = formal.greet("client 2").await;
-    info!("[client 2] formal: {}", g2.as_str());
+    let g = formal.greet("client 2").await;
+    info!("[client 2] formal: {}", g.as_str());
 
     info!("[client 2] done.");
     if CLIENTS_DONE.fetch_add(1, Ordering::AcqRel) + 1 == NUM_CLIENTS {
@@ -117,11 +140,13 @@ async fn client_task_2() {
 fn client_thread() {
     let client = casual_client_sync!(ThreadBlockOn);
 
-    let g = client.greet("thread");
-    info!("[thread] casual: {}", g.as_str());
-
-    let h = client.health();
-    info!("[thread] healthy: {}", h);
+    for i in 0..3u8 {
+        let mut name = heapless::String::<16>::new();
+        let _ = name.push_str("thr-");
+        let _ = name.push(char::from(b'0' + i));
+        let g = client.greet(name.as_str());
+        info!("[thread] {}", g.as_str());
+    }
 
     info!("[thread] done.");
     if CLIENTS_DONE.fetch_add(1, Ordering::AcqRel) + 1 == NUM_CLIENTS {

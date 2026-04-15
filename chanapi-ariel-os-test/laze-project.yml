@@ -6,6 +6,7 @@ imports:
 
 apps:
   - name: chanapi-ariel-os-test
-    context: native
+    context:
+      - native
     depends:
       - sw/threading
