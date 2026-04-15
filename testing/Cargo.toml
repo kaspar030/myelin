@@ -5,6 +5,6 @@ edition = "2024"
 
 [dependencies]
 chanapi = { path = "../chanapi", features = ["tokio"] }
-testing-service = { path = "../testing-service" }
+testing-service = { path = "../testing-service", features = ["tokio"] }
 heapless = "0.8"
 tokio = { version = "1", features = ["full"] }

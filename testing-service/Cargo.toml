@@ -7,6 +7,7 @@ edition = "2024"
 default = []
 embassy = ["chanapi/embassy", "dep:static_cell"]
 serde = ["dep:serde", "heapless/serde"]
+tokio = ["chanapi/tokio"]
 
 [dependencies]
 chanapi = { path = "../chanapi" }

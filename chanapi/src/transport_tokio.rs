@@ -1,11 +1,60 @@
 //! Tokio-based local transport: `mpsc` for requests, `oneshot` for replies.
 //!
 //! Moves Rust types directly — no serialization.
+//!
+//! ## Usage
+//!
+//! ```ignore
+//! // Create the service (owns the channel):
+//! let service = TokioService::<MyReq, MyResp>::new(8);
+//!
+//! // Get a client handle (cloneable):
+//! let client = service.client();
+//!
+//! // Get the server handle (consumes the receiver):
+//! let mut server = service.server();
+//!
+//! // Spawn the server task:
+//! tokio::spawn(async move { my_serve(&impl, &mut server).await });
+//!
+//! // Use the client:
+//! client.call(req).await;
+//! ```
 
 use tokio::sync::{mpsc, oneshot};
 
 use crate::error::{CallError, TransportResult};
 use crate::transport::{ClientTransport, ServerTransport};
+
+/// The service endpoint — owns the channel, hands out client and server handles.
+pub struct TokioService<Req, Resp> {
+    tx: mpsc::Sender<(Req, oneshot::Sender<Resp>)>,
+    rx: Option<mpsc::Receiver<(Req, oneshot::Sender<Resp>)>>,
+}
+
+impl<Req, Resp> TokioService<Req, Resp> {
+    /// Create a new service with the given channel depth.
+    pub fn new(channel_depth: usize) -> Self {
+        let (tx, rx) = mpsc::channel(channel_depth);
+        Self { tx, rx: Some(rx) }
+    }
+
+    /// Get a client handle. Cloneable — multiple clients can share the same channel.
+    pub fn client(&self) -> TokioClient<Req, Resp> {
+        TokioClient {
+            tx: self.tx.clone(),
+        }
+    }
+
+    /// Take the server handle. Can only be called once (the receiver is moved out).
+    ///
+    /// Panics if called more than once.
+    pub fn server(&mut self) -> TokioServer<Req, Resp> {
+        TokioServer {
+            rx: self.rx.take().expect("server() called more than once"),
+        }
+    }
+}
 
 /// The client's handle — cloneable, send requests into the service.
 #[derive(Clone)]
@@ -16,12 +65,6 @@ pub struct TokioClient<Req, Resp> {
 /// The server's handle — receive requests, send replies.
 pub struct TokioServer<Req, Resp> {
     rx: mpsc::Receiver<(Req, oneshot::Sender<Resp>)>,
-}
-
-/// Create a linked client/server pair.
-pub fn create<Req, Resp>(channel_depth: usize) -> (TokioClient<Req, Resp>, TokioServer<Req, Resp>) {
-    let (tx, rx) = mpsc::channel(channel_depth);
-    (TokioClient { tx }, TokioServer { rx })
 }
 
 // -- Error --

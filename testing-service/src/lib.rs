@@ -143,6 +143,13 @@ pub type GreeterEmbassyService<M, const CHANNEL_DEPTH: usize> =
 pub type GreeterEmbassyClientTransport<'a, M, const CHANNEL_DEPTH: usize> =
     chanapi::transport_embassy::EmbassyClient<'a, M, GreeterRequest, GreeterResponse, CHANNEL_DEPTH>;
 
+// -- Tokio convenience types (what the macro would generate) --
+
+#[cfg(feature = "tokio")]
+/// Type alias for the tokio service endpoint.
+pub type GreeterTokioService =
+    chanapi::transport_tokio::TokioService<GreeterRequest, GreeterResponse>;
+
 /// Instantiate a Greeter embassy service and generate helper macros.
 ///
 /// Takes a name prefix to allow multiple instances of the same service type.

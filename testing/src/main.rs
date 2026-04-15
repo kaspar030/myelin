@@ -1,8 +1,10 @@
-//! Tokio test binary exercising the greeter service over tokio channels.
+//! Tokio test binary exercising the greeter service.
+//!
+//! Demonstrates a realistic pattern: the server is set up in one place,
+//! client handles are obtained separately.
 
-use chanapi::transport_tokio;
 use testing_service::{
-    GreeterClient, GreeterRequest, GreeterResponse, GreeterService, greeter_serve,
+    GreeterClient, GreeterService, GreeterTokioService, greeter_serve,
 };
 
 // -- Service implementation --
@@ -25,28 +27,35 @@ impl GreeterService for GreeterImpl {
 
 #[tokio::main]
 async fn main() {
-    let (client_transport, mut server_transport) =
-        transport_tokio::create::<GreeterRequest, GreeterResponse>(8);
+    // -- Server setup (e.g., in a server module) --
+    let mut service = GreeterTokioService::new(8);
+    let mut server = service.server();
 
-    let client = GreeterClient::new(client_transport);
-
-    // Spawn the service task.
-    let svc = GreeterImpl;
     let server_handle = tokio::spawn(async move {
-        if let Err(e) = greeter_serve(&svc, &mut server_transport).await {
+        let svc = GreeterImpl;
+        if let Err(e) = greeter_serve(&svc, &mut server).await {
             eprintln!("server error: {e}");
         }
     });
 
-    // Make some calls.
+    // -- Client usage (e.g., in a different module/task) --
+    let client = GreeterClient::new(service.client());
+
     let greeting = client.greet("mama").await.expect("greet failed");
     println!("{greeting}");
 
     let healthy = client.health().await.expect("health failed");
     println!("healthy: {healthy}");
 
-    // Drop client to shut down server.
+    // A second client from the same service.
+    let client2 = GreeterClient::new(service.client());
+    let greeting2 = client2.greet("papa").await.expect("greet failed");
+    println!("{greeting2}");
+
+    // Drop clients to shut down server.
     drop(client);
+    drop(client2);
+    drop(service);
     let _ = server_handle.await;
 
     println!("done.");
