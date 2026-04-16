@@ -15,12 +15,8 @@ use testing_service::{
 struct GreeterImpl;
 
 impl GreeterServiceSync for GreeterImpl {
-    fn greet(&self, name: &str) -> heapless::String<64> {
-        let mut s = heapless::String::new();
-        let _ = s.push_str("Hello over stdio, ");
-        let _ = s.push_str(name);
-        let _ = s.push_str("!");
-        s
+    fn greet(&self, name: String) -> String {
+        format!("Hello over stdio, {name}!")
     }
 
     fn health(&self) -> bool {
@@ -31,12 +27,8 @@ impl GreeterServiceSync for GreeterImpl {
 struct CombinedImpl;
 
 impl GreeterServiceSync for CombinedImpl {
-    fn greet(&self, name: &str) -> heapless::String<64> {
-        let mut s = heapless::String::new();
-        let _ = s.push_str("Combined stdio, ");
-        let _ = s.push_str(name);
-        let _ = s.push_str("!");
-        s
+    fn greet(&self, name: String) -> String {
+        format!("Combined stdio, {name}!")
     }
 
     fn health(&self) -> bool {
@@ -120,7 +112,7 @@ fn run_greeter_client() {
         SyncBlockOn,
     );
 
-    let greeting = client.greet("world").expect("greet failed");
+    let greeting = client.greet("world".to_string()).expect("greet failed");
     println!("[client] {greeting}");
 
     let healthy = client.health().expect("health failed");
@@ -156,7 +148,7 @@ fn run_combined_client() {
     );
 
     // Test greeter sub-service
-    let greeting = client.greeter().greet("stdio").expect("greet failed");
+    let greeting = client.greeter().greet("stdio".to_string()).expect("greet failed");
     println!("[client] {greeting}");
 
     let healthy = client.greeter().health().expect("health failed");

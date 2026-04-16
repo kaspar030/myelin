@@ -1,7 +1,47 @@
 //! Proc macros for the [`chanapi`](https://docs.rs/chanapi) crate.
 //!
 //! This crate is an implementation detail: always invoke its macros via the
-//! `chanapi` re-exports (e.g. `#[chanapi::service]`).
+//! `chanapi` re-exports (e.g. `#[chanapi::service]`). See the
+//! [`service`] attribute below for the full input/output contract.
+//!
+//! # Worked example
+//!
+//! ```ignore
+//! use chanapi::service;
+//!
+//! #[service(api_id = 0x0001)]
+//! pub trait GreeterService {
+//!     async fn greet(&self, name: String) -> String;
+//!     fn health(&self) -> bool;   // sync — dispatched without `.await`
+//! }
+//! ```
+//!
+//! expands (roughly) to:
+//!
+//! - `GreeterRequest` / `GreeterResponse` enums (serde-gated `#[derive]`s)
+//! - `GreeterService` (async, preserved verbatim) + `GreeterServiceSync`
+//!   (sync mirror — `async` stripped from every method)
+//! - `GreeterClient<T>` + `GreeterClientSync<T, B>` with one client method
+//!   per trait method
+//! - `greeter_dispatch` / `greeter_dispatch_sync` and
+//!   `greeter_serve` / `greeter_serve_sync`
+//! - `GreeterTokioService` / `GreeterEmbassyService<M, N>` /
+//!   `GreeterEmbassyClientTransport<'a, M, N>` type aliases
+//!   (feature-gated in the consuming crate)
+//! - `greeter_embassy_service!` `macro_rules!` (embassy-gated) for static
+//!   instantiation, with nested `*_client!` / `*_server!` / `*_client_sync!`
+//!   helpers
+//! - `GREETER_API_ID: u16 = 0x0001` (or an FNV-1a hash of the trait ident
+//!   when the `api_id` argument is omitted)
+//!
+//! Multiple services can be multiplexed onto a single transport with
+//! [`chanapi::compose_service!`].
+//!
+//! Methods may be either `async fn` or plain `fn`; in the generated async
+//! dispatch, sync methods are called directly (no spurious `.await`).
+//! Cross-service clients always expose `async` method stubs regardless of
+//! whether the underlying trait method was sync, because the transport is
+//! always async.
 
 mod emit;
 mod parse;

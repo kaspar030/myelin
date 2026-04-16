@@ -1,0 +1,5 @@
+error: chanapi::service: unknown argument `whatever`; the only currently supported key is `api_id`
+ --> tests/ui/fail_unknown_attr_key.rs:1:20
+  |
+1 | #[chanapi::service(whatever = 1)]
+  |                    ^^^^^^^^

@@ -9,7 +9,6 @@ ariel-os-boards = { path = "build/imports/ariel-os/src/ariel-os-boards" }
 chanapi = { path = "../chanapi", features = ["embassy"] }
 testing-service = { path = "../testing-service", features = ["embassy"] }
 embassy-sync = "0.7"
-heapless = "0.8"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

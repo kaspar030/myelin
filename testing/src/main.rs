@@ -14,15 +14,11 @@ use testing_service::{
 struct GreeterImpl;
 
 impl GreeterService for GreeterImpl {
-    async fn greet(&self, name: &str) -> heapless::String<64> {
-        let mut s = heapless::String::new();
-        let _ = s.push_str("Hello, ");
-        let _ = s.push_str(name);
-        let _ = s.push_str("!");
-        s
+    async fn greet(&self, name: String) -> String {
+        format!("Hello, {name}!")
     }
 
-    async fn health(&self) -> bool {
+    fn health(&self) -> bool {
         true
     }
 }
@@ -31,15 +27,11 @@ impl GreeterService for GreeterImpl {
 struct CombinedImpl;
 
 impl GreeterService for CombinedImpl {
-    async fn greet(&self, name: &str) -> heapless::String<64> {
-        let mut s = heapless::String::new();
-        let _ = s.push_str("Hi from combined, ");
-        let _ = s.push_str(name);
-        let _ = s.push_str("!");
-        s
+    async fn greet(&self, name: String) -> String {
+        format!("Hi from combined, {name}!")
     }
 
-    async fn health(&self) -> bool {
+    fn health(&self) -> bool {
         true
     }
 }
@@ -73,14 +65,14 @@ async fn main() {
 
     let client = GreeterClient::new(service.client());
 
-    let greeting = client.greet("mama").await.expect("greet failed");
+    let greeting = client.greet("mama".to_string()).await.expect("greet failed");
     println!("{greeting}");
 
     let healthy = client.health().await.expect("health failed");
     println!("healthy: {healthy}");
 
     let client2 = GreeterClient::new(service.client());
-    let greeting2 = client2.greet("papa").await.expect("greet failed");
+    let greeting2 = client2.greet("papa".to_string()).await.expect("greet failed");
     println!("{greeting2}");
 
     drop(client);
@@ -106,7 +98,7 @@ async fn main() {
     let combined_client = CombinedClient::new(combined_service.client());
 
     // Use the greeter sub-service
-    let greeting = combined_client.greeter().greet("world").await.expect("greet failed");
+    let greeting = combined_client.greeter().greet("world".to_string()).await.expect("greet failed");
     println!("{greeting}");
 
     let healthy = combined_client.greeter().health().await.expect("health failed");

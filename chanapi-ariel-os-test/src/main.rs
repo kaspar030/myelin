@@ -2,6 +2,19 @@
 #![no_std]
 #![allow(async_fn_in_trait)]
 
+//! FIXME: this crate was excluded from the workspace to track a pre-existing
+//! `chanapi/embassy` E0119 (see task 476). With the `#[chanapi::service]` v1
+//! adoption (task 482) the trait now uses `String`, which requires `alloc`.
+//! Ariel-OS v0.4 does not ship a global allocator out of the box, so wiring
+//! one up (e.g. `embedded-alloc`) is deferred. Until that lands, this crate
+//! will not compile — same "pre-existing embassy issue" level as before the
+//! macro adoption.
+
+extern crate alloc;
+
+use alloc::format;
+use alloc::string::{String, ToString};
+
 use ariel_os::debug::{ExitCode, exit, log::info};
 use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -32,18 +45,11 @@ struct CasualGreeter {
 }
 
 impl GreeterService for CasualGreeter {
-    async fn greet(&self, name: &str) -> heapless::String<64> {
-        let mut s = heapless::String::new();
-        let _ = s.push_str("Yo, ");
-        let _ = s.push_str(name);
-        let _ = s.push_str("! (server ");
-        // Append server id as a digit.
-        let _ = s.push(char::from(b'0' + self.id));
-        let _ = s.push(')');
-        s
+    async fn greet(&self, name: String) -> String {
+        format!("Yo, {name}! (server {})", self.id)
     }
 
-    async fn health(&self) -> bool {
+    fn health(&self) -> bool {
         true
     }
 }
@@ -52,12 +58,8 @@ impl GreeterService for CasualGreeter {
 struct FormalGreeter;
 
 impl GreeterServiceSync for FormalGreeter {
-    fn greet(&self, name: &str) -> heapless::String<64> {
-        let mut s = heapless::String::new();
-        let _ = s.push_str("Good day, ");
-        let _ = s.push_str(name);
-        let _ = s.push_str(". How do you do?");
-        s
+    fn greet(&self, name: String) -> String {
+        format!("Good day, {name}. How do you do?")
     }
 
     fn health(&self) -> bool {
@@ -96,14 +98,12 @@ async fn client_task_1() {
     let formal = formal_client!();
 
     for i in 0..3u8 {
-        let mut name = heapless::String::<16>::new();
-        let _ = name.push_str("c1-");
-        let _ = name.push(char::from(b'0' + i));
-        let g = casual.greet(name.as_str()).await;
+        let name = format!("c1-{i}");
+        let g = casual.greet(name).await;
         info!("[client 1] {}", g.as_str());
     }
 
-    let g = formal.greet("client 1").await;
+    let g = formal.greet("client 1".to_string()).await;
     info!("[client 1] formal: {}", g.as_str());
 
     info!("[client 1] done.");
@@ -119,14 +119,12 @@ async fn client_task_2() {
     let formal = formal_client!();
 
     for i in 0..3u8 {
-        let mut name = heapless::String::<16>::new();
-        let _ = name.push_str("c2-");
-        let _ = name.push(char::from(b'0' + i));
-        let g = casual.greet(name.as_str()).await;
+        let name = format!("c2-{i}");
+        let g = casual.greet(name).await;
         info!("[client 2] {}", g.as_str());
     }
 
-    let g = formal.greet("client 2").await;
+    let g = formal.greet("client 2".to_string()).await;
     info!("[client 2] formal: {}", g.as_str());
 
     info!("[client 2] done.");
@@ -141,10 +139,8 @@ fn client_thread() {
     let client = casual_client_sync!(ThreadBlockOn);
 
     for i in 0..3u8 {
-        let mut name = heapless::String::<16>::new();
-        let _ = name.push_str("thr-");
-        let _ = name.push(char::from(b'0' + i));
-        let g = client.greet(name.as_str());
+        let name = format!("thr-{i}");
+        let g = client.greet(name);
         info!("[thread] {}", g.as_str());
     }
 

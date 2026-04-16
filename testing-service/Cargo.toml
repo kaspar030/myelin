@@ -5,13 +5,10 @@ edition = "2024"
 
 [features]
 default = []
-embassy = ["chanapi/embassy", "dep:static_cell"]
-serde = ["dep:serde", "heapless/serde"]
+embassy = ["chanapi/embassy"]
+serde = ["dep:serde"]
 tokio = ["chanapi/tokio"]
 
 [dependencies]
 chanapi = { path = "../chanapi" }
-heapless = "0.8"
-paste = "1"
 serde = { version = "1", features = ["derive"], optional = true }
-static_cell = { version = "2", optional = true }

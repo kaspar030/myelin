@@ -6,4 +6,3 @@ edition = "2024"
 [dependencies]
 chanapi = { path = "../chanapi", features = ["postcard"] }
 testing-service = { path = "../testing-service", features = ["serde"] }
-heapless = "0.8"
