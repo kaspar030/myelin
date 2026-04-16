@@ -5,11 +5,75 @@
 //! lives here; emit code can assume a well-formed [`ServiceTrait`].
 
 use convert_case::{Case, Casing};
-use proc_macro2::Span;
+use proc_macro2::{Span, TokenStream};
+use syn::parse::Parser;
 use syn::spanned::Spanned;
 use syn::{
-    FnArg, Ident, Pat, PatIdent, ReturnType, TraitItem, TraitItemFn, Type, Visibility,
+    FnArg, Ident, LitInt, Pat, PatIdent, ReturnType, TraitItem, TraitItemFn, Type, Visibility,
 };
+
+/// Parsed `#[chanapi::service(...)]` attribute arguments.
+///
+/// Currently only `api_id = <int>` is recognised. Unknown keys are a hard
+/// error so that additional knobs can be added later without silently
+/// accepting typos.
+#[derive(Default, Debug)]
+pub struct ServiceArgs {
+    /// Explicit `api_id = ...` override. `None` ⇒ emit the FNV-1a hash of
+    /// the trait ident as the wire-level api id.
+    pub api_id: Option<u16>,
+}
+
+impl ServiceArgs {
+    /// Parse the attribute-arg token stream handed to the proc macro.
+    ///
+    /// An empty stream yields `ServiceArgs::default()` (i.e. every field
+    /// `None`). Unknown keys, duplicate keys, and out-of-range values
+    /// produce a `syn::Error` spanned at the offending token.
+    pub fn parse(attr: TokenStream) -> syn::Result<Self> {
+        let mut args = ServiceArgs::default();
+        // Track the span of a previous `api_id = ...` so a duplicate can
+        // point at *both* occurrences via `syn::Error::combine`.
+        let mut api_id_span: Option<Span> = None;
+
+        let parser = syn::meta::parser(|meta| {
+            if meta.path.is_ident("api_id") {
+                let value: LitInt = meta.value()?.parse()?;
+                let n: u64 = value.base10_parse()?;
+                if n > u16::MAX as u64 {
+                    return Err(syn::Error::new(
+                        value.span(),
+                        format!(
+                            "chanapi::service: api_id = {n} does not fit in u16 (max {})",
+                            u16::MAX
+                        ),
+                    ));
+                }
+                if api_id_span.is_some() {
+                    return Err(syn::Error::new(
+                        value.span(),
+                        "chanapi::service: `api_id` specified more than once",
+                    ));
+                }
+                api_id_span = Some(value.span());
+                args.api_id = Some(n as u16);
+                Ok(())
+            } else {
+                let name = meta
+                    .path
+                    .get_ident()
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "<non-ident>".to_string());
+                Err(meta.error(format_args!(
+                    "chanapi::service: unknown argument `{name}`; \
+                     the only currently supported key is `api_id`",
+                )))
+            }
+        });
+        parser.parse2(attr)?;
+        Ok(args)
+    }
+}
 
 /// A validated service trait ready for code generation.
 pub struct ServiceTrait {

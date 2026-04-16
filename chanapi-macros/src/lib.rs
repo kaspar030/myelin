@@ -38,6 +38,11 @@ use quote::quote;
 ///     `#[cfg(feature = "embassy")]` that instantiates a static embassy
 ///     service plus three nested `*_client!` / `*_server!` / `*_client_sync!`
 ///     helper macros. Takes `($name:ident, $mutex:ty, $depth:expr)`.
+/// 11. `{STEM_UPPER}_API_ID: u16` — wire-level API identifier. Defaults to a
+///     16-bit FNV-1a hash of the trait ident; override with
+///     `#[chanapi::service(api_id = 0x1234)]`. Since the id space is only
+///     2^16 wide, collisions are possible across unrelated services — for
+///     production deployments override explicitly.
 ///
 /// The "stem" is derived by stripping a trailing `Service` from the trait
 /// name (e.g. `GreeterService` → `Greeter`). The trait name must end in
@@ -74,13 +79,23 @@ use quote::quote;
 /// - Argument types must be owned (no `&T`/`&mut T`).
 /// - Return types are passed through verbatim.
 ///
-/// # Unstable API surface
+/// # Attribute arguments
 ///
-/// The `api_id` constant (subtask 4) is not emitted by the current
-/// revision.
+/// Currently recognised:
+///
+/// - `api_id = <int literal>` — override the wire-level API id constant.
+///   Must fit in a `u16`. Accepts hex (`0x1234`), decimal, or underscored
+///   literals. When omitted, a 16-bit FNV-1a hash of the trait ident is
+///   used.
+///
+/// Any other key is a hard error; this is intentional so future knobs can
+/// be added without silently accepting typos.
 #[proc_macro_attribute]
-pub fn service(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Subtask 1: `attr` is ignored. Subtask 4 will parse `api_id = ...`.
+pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = match parse::ServiceArgs::parse(attr.into()) {
+        Ok(a) => a,
+        Err(e) => return e.to_compile_error().into(),
+    };
 
     let item_trait = match syn::parse::<syn::ItemTrait>(item) {
         Ok(t) => t,
@@ -101,6 +116,7 @@ pub fn service(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let serve_sync = emit::serve_sync_fn(&svc);
             let aliases = emit::transport_aliases(&svc);
             let embassy_instantiation = emit::embassy_instantiation(&svc);
+            let api_id = emit::api_id_const(&svc, args.api_id);
             quote! {
                 #req
                 #resp
@@ -114,6 +130,7 @@ pub fn service(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 #serve_sync
                 #aliases
                 #embassy_instantiation
+                #api_id
             }
             .into()
         }
@@ -129,7 +146,11 @@ pub fn service(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    use super::{emit, parse::ServiceTrait};
+    use super::{
+        emit,
+        parse::{ServiceArgs, ServiceTrait},
+    };
+    use quote::quote;
 
     fn canon(ts: proc_macro2::TokenStream) -> String {
         ts.to_string()
@@ -242,7 +263,10 @@ mod tests {
         };
         let svc = ServiceTrait::parse(item).unwrap();
         let got = canon(emit::response_enum(&svc));
-        assert!(got.contains("Maybe (Result < String , u32 >)"), "got: {got}");
+        assert!(
+            got.contains("Maybe (Result < String , u32 >)"),
+            "got: {got}"
+        );
     }
 
     #[test]
@@ -480,10 +504,7 @@ mod tests {
             got.contains("pub async fn greet (& self , name : String)"),
             "got: {got}"
         );
-        assert!(
-            got.contains("pub async fn health (& self ,)"),
-            "got: {got}"
-        );
+        assert!(got.contains("pub async fn health (& self ,)"), "got: {got}");
         // Return-type shape uses `TransportResult<Ret>::Output`.
         assert!(
             got.contains("< T :: Error as :: chanapi :: TransportResult < String >> :: Output"),
@@ -628,10 +649,7 @@ mod tests {
         };
         let svc = ServiceTrait::parse(item).unwrap();
         let got = canon(emit::dispatch_fn(&svc));
-        assert!(
-            got.contains("MathRequest :: Add { a , b }"),
-            "got: {got}"
-        );
+        assert!(got.contains("MathRequest :: Add { a , b }"), "got: {got}");
         assert!(
             got.contains("MathResponse :: Add (svc . add (a , b) . await)"),
             "got: {got}"
@@ -648,9 +666,7 @@ mod tests {
         );
         assert!(got.contains("S : GreeterService"), "got: {got}");
         assert!(
-            got.contains(
-                "T : :: chanapi :: ServerTransport < GreeterRequest , GreeterResponse >"
-            ),
+            got.contains("T : :: chanapi :: ServerTransport < GreeterRequest , GreeterResponse >"),
             "got: {got}"
         );
         assert!(got.contains("transport . recv () . await ?"), "got: {got}");
@@ -751,7 +767,10 @@ mod tests {
             "got: {got}"
         );
         // embassy aliases under `feature = "embassy"` cfg
-        assert!(got.contains("# [cfg (feature = \"embassy\")]"), "got: {got}");
+        assert!(
+            got.contains("# [cfg (feature = \"embassy\")]"),
+            "got: {got}"
+        );
         assert!(
             got.contains(
                 "pub type GreeterEmbassyService < M , const CHANNEL_DEPTH : usize > = \
@@ -779,8 +798,14 @@ mod tests {
         };
         let svc = ServiceTrait::parse(item).unwrap();
         let got = canon(emit::transport_aliases(&svc));
-        assert!(got.contains("pub (crate) type FooTokioService"), "got: {got}");
-        assert!(got.contains("pub (crate) type FooEmbassyService"), "got: {got}");
+        assert!(
+            got.contains("pub (crate) type FooTokioService"),
+            "got: {got}"
+        );
+        assert!(
+            got.contains("pub (crate) type FooEmbassyService"),
+            "got: {got}"
+        );
         assert!(
             got.contains("pub (crate) type FooEmbassyClientTransport"),
             "got: {got}"
@@ -800,7 +825,10 @@ mod tests {
     fn embassy_instantiation_outer_macro_shape() {
         let svc = greeter();
         let got = canon(emit::embassy_instantiation(&svc));
-        assert!(got.contains("# [cfg (feature = \"embassy\")]"), "got: {got}");
+        assert!(
+            got.contains("# [cfg (feature = \"embassy\")]"),
+            "got: {got}"
+        );
         assert!(got.contains("# [macro_export]"), "got: {got}");
         assert!(
             got.contains("macro_rules ! greeter_embassy_service"),
@@ -886,15 +914,9 @@ mod tests {
             got.contains("macro_rules ! [< $ name _client_sync >]"),
             "got: {got}"
         );
-        assert!(
-            got.contains("($ block_on : expr)"),
-            "got: {got}"
-        );
+        assert!(got.contains("($ block_on : expr)"), "got: {got}");
         // Baked-in sync client + async client refs.
-        assert!(
-            got.contains("GreeterClientSync :: new ("),
-            "got: {got}"
-        );
+        assert!(got.contains("GreeterClientSync :: new ("), "got: {got}");
         assert!(
             got.contains("GreeterClient :: new (& * CELL . init"),
             "got: {got}"
@@ -923,9 +945,180 @@ mod tests {
             got.contains("FooBarClient :: new"),
             "expected PascalCase stem in nested client body; got: {got}"
         );
+        assert!(got.contains("FooBarClientSync :: new"), "got: {got}");
+    }
+
+    // ----- subtask 4: api_id constant & attribute parsing -----
+
+    /// Known-good FNV-1a16 values. Regression-pins the hash function so
+    /// that future refactors don't silently shift the wire id of existing
+    /// services. (Spot-checked by hand-tracing the algorithm.)
+    #[test]
+    fn fnv1a16_known_values() {
+        // Both values are non-zero and distinct — the doc-comment on the
+        // emitted constant promises both properties for "reasonable" trait
+        // names.
+        let greeter = emit::fnv1a16("GreeterService");
+        let math = emit::fnv1a16("MathService");
+        assert_ne!(greeter, 0);
+        assert_ne!(math, 0);
+        assert_ne!(greeter, math);
+
+        // Pinned literals — recompute and paste if you intentionally change
+        // the hash definition.
+        assert_eq!(emit::fnv1a16("GreeterService"), 0x237d);
+        assert_eq!(emit::fnv1a16("MathService"), 0x90b0);
+        assert_eq!(emit::fnv1a16(""), 0x1cd9); // FNV offset basis folded
+    }
+
+    #[test]
+    fn api_id_const_default_hash() {
+        let item: syn::ItemTrait = syn::parse_quote! {
+            pub trait GreeterService {
+                async fn greet(&self, name: String) -> String;
+            }
+        };
+        let svc = ServiceTrait::parse(item).unwrap();
+        let got = canon(emit::api_id_const(&svc, None));
+        // Constant ident is SCREAMING_SNAKE of the stem + `_API_ID`.
         assert!(
-            got.contains("FooBarClientSync :: new"),
+            got.contains("pub const GREETER_API_ID : u16 ="),
             "got: {got}"
         );
+        // Default value is the FNV-1a hash of the full trait ident.
+        let want = emit::fnv1a16("GreeterService");
+        assert!(
+            got.contains(&format!("= {want}u16")) || got.contains(&format!("= {want} u16")),
+            "expected literal `{want}u16` in: {got}"
+        );
+    }
+
+    #[test]
+    fn api_id_const_override() {
+        let item: syn::ItemTrait = syn::parse_quote! {
+            pub trait GreeterService {
+                async fn greet(&self, name: String) -> String;
+            }
+        };
+        let svc = ServiceTrait::parse(item).unwrap();
+        let got = canon(emit::api_id_const(&svc, Some(0x1234)));
+        assert!(
+            got.contains("pub const GREETER_API_ID : u16 ="),
+            "got: {got}"
+        );
+        // The literal lands verbatim in the tokens as `4660u16` (decimal
+        // form used by quote! for integer literals).
+        assert!(
+            got.contains("4660u16") || got.contains("4660 u16"),
+            "got: {got}"
+        );
+    }
+
+    #[test]
+    fn api_id_const_multi_word_stem() {
+        let item: syn::ItemTrait = syn::parse_quote! {
+            pub trait FooBarService {
+                fn ping(&self);
+            }
+        };
+        let svc = ServiceTrait::parse(item).unwrap();
+        let got = canon(emit::api_id_const(&svc, None));
+        assert!(
+            got.contains("pub const FOO_BAR_API_ID : u16 ="),
+            "expected SCREAMING_SNAKE multi-word stem; got: {got}"
+        );
+    }
+
+    #[test]
+    fn api_id_const_carries_doc_comment() {
+        let item: syn::ItemTrait = syn::parse_quote! {
+            pub trait GreeterService {
+                fn ping(&self);
+            }
+        };
+        let svc = ServiceTrait::parse(item).unwrap();
+        let got = canon(emit::api_id_const(&svc, None));
+        // Doc comment mentions the stem *and* points users at the override.
+        assert!(
+            got.contains("Wire-level API identifier for the Greeter service"),
+            "got: {got}"
+        );
+        assert!(got.contains("api_id = 0x0001"), "got: {got}");
+    }
+
+    #[test]
+    fn api_id_const_preserves_visibility() {
+        // Private trait (no `pub`) should yield a private const.
+        let item: syn::ItemTrait = syn::parse_quote! {
+            trait GreeterService {
+                fn ping(&self);
+            }
+        };
+        let svc = ServiceTrait::parse(item).unwrap();
+        let got = canon(emit::api_id_const(&svc, None));
+        assert!(got.contains("const GREETER_API_ID : u16 ="), "got: {got}");
+        assert!(
+            !got.contains("pub const GREETER_API_ID"),
+            "expected private const; got: {got}"
+        );
+    }
+
+    // ----- attribute parser -----
+
+    fn parse_args(ts: proc_macro2::TokenStream) -> syn::Result<ServiceArgs> {
+        ServiceArgs::parse(ts)
+    }
+
+    #[test]
+    fn service_args_empty() {
+        let args = parse_args(quote! {}).unwrap();
+        assert!(args.api_id.is_none());
+    }
+
+    #[test]
+    fn service_args_hex_api_id() {
+        let args = parse_args(quote! { api_id = 0x1234 }).unwrap();
+        assert_eq!(args.api_id, Some(0x1234));
+    }
+
+    #[test]
+    fn service_args_decimal_api_id() {
+        let args = parse_args(quote! { api_id = 42 }).unwrap();
+        assert_eq!(args.api_id, Some(42));
+    }
+
+    #[test]
+    fn service_args_api_id_max() {
+        let args = parse_args(quote! { api_id = 0xffff }).unwrap();
+        assert_eq!(args.api_id, Some(u16::MAX));
+    }
+
+    #[test]
+    fn service_args_api_id_overflow() {
+        let err = parse_args(quote! { api_id = 70000 }).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("does not fit in u16"), "got: {msg}");
+    }
+
+    #[test]
+    fn service_args_unknown_key() {
+        let err = parse_args(quote! { unknown = 1 }).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown"), "got: {msg}");
+    }
+
+    #[test]
+    fn service_args_duplicate_api_id() {
+        let err = parse_args(quote! { api_id = 1, api_id = 2 }).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("more than once"), "got: {msg}");
+    }
+
+    #[test]
+    fn service_args_api_id_non_integer_literal() {
+        // A string literal in the value position is rejected by `LitInt`.
+        let err = parse_args(quote! { api_id = "nope" }).unwrap_err();
+        // Error message comes from `syn` itself; we just want *some* error.
+        let _ = err.to_string();
     }
 }

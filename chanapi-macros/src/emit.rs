@@ -6,7 +6,7 @@
 
 use convert_case::{Case, Casing};
 use proc_macro2::TokenStream;
-use quote::{ToTokens, quote};
+use quote::{quote, ToTokens};
 use syn::{Ident, TraitItem};
 
 use crate::parse::{ReturnKind, ServiceMethod, ServiceTrait};
@@ -66,6 +66,57 @@ pub fn response_enum(svc: &ServiceTrait) -> TokenStream {
 /// Re-emit the user's trait verbatim as the async trait.
 pub fn async_trait(svc: &ServiceTrait) -> TokenStream {
     svc.item.to_token_stream()
+}
+
+/// `{STEM_UPPER}_API_ID: u16` constant with a doc-comment warning about the
+/// 2^16-wide id space.
+///
+/// When `override_id` is `Some`, it is emitted verbatim; otherwise the
+/// 16-bit FNV-1a hash of the full trait ident string (e.g. `GreeterService`,
+/// **not** the stripped stem) is used.
+pub fn api_id_const(svc: &ServiceTrait, override_id: Option<u16>) -> TokenStream {
+    let vis = &svc.vis;
+    let stem_upper = stem_upper(&svc.stem);
+    let const_ident = Ident::new(&format!("{stem_upper}_API_ID"), svc.stem.span());
+
+    let trait_ident = &svc.item.ident;
+    let trait_ident_str = trait_ident.to_string();
+    let stem_str = svc.stem.to_string();
+
+    let value: u16 = override_id.unwrap_or_else(|| fnv1a16(&trait_ident_str));
+
+    // Prebuild the doc string at macro-expansion time — no `concat!` needed
+    // in the emitted code.
+    let doc = format!(
+        "Wire-level API identifier for the {stem_str} service.\n\
+         \n\
+         Default value is a 16-bit FNV-1a hash of the trait name.\n\
+         Since the API id space is only 2^16 wide, collisions are possible across\n\
+         unrelated services. For production deployments, override explicitly:\n\
+         \n\
+         ```ignore\n\
+         #[chanapi::service(api_id = 0x0001)]\n\
+         pub trait {trait_ident_str} {{ /* ... */ }}\n\
+         ```",
+    );
+
+    quote! {
+        #[doc = #doc]
+        #vis const #const_ident: u16 = #value;
+    }
+}
+
+/// 16-bit FNV-1a hash: 32-bit FNV-1a, then XOR-fold top and bottom halves.
+///
+/// Computed at macro-expansion time; the emitted code contains only a `u16`
+/// literal.
+pub fn fnv1a16(s: &str) -> u16 {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in s.as_bytes() {
+        h ^= *b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    ((h >> 16) as u16) ^ (h as u16)
 }
 
 /// `{Stem}ServiceSync` trait with every method de-asynced.
@@ -169,10 +220,7 @@ fn ret_ty_tokens(ret: &ReturnKind) -> TokenStream {
 /// Build a `{Stem}Request::{Variant}` pattern/constructor given the method's args.
 /// - Zero args  → unit form: `#req_ty::#variant`
 /// - N args     → struct form with init shorthand: `#req_ty::#variant { a, b, .. }`
-fn request_ctor(
-    req_ty: &Ident,
-    m: &ServiceMethod,
-) -> TokenStream {
+fn request_ctor(req_ty: &Ident, m: &ServiceMethod) -> TokenStream {
     let v = &m.variant_ident;
     if m.args.is_empty() {
         quote! { #req_ty::#v }
@@ -321,11 +369,7 @@ pub fn dispatch_fn(svc: &ServiceTrait) -> TokenStream {
         let variant = &m.variant_ident;
         let pat = request_ctor(&req_ty, m);
         let arg_names = m.args.iter().map(|a| &a.ident);
-        let call_suffix: TokenStream = if m.is_async {
-            quote!(.await)
-        } else {
-            quote!()
-        };
+        let call_suffix: TokenStream = if m.is_async { quote!(.await) } else { quote!() };
         let body = match &m.ret {
             ReturnKind::Unit => quote! {
                 {
