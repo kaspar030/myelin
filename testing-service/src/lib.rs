@@ -10,6 +10,19 @@
 use chanapi::transport::{ClientTransport, ServerTransport};
 use chanapi::TransportResult;
 
+// =============================================================================
+// Wire-level API identifiers
+// =============================================================================
+
+/// Wire-level API identifier for the Greeter service.
+///
+/// Used by the mux layer to route frames to the correct handler when
+/// multiple APIs share a single byte stream.
+pub const GREETER_API_ID: u16 = 0x0001;
+
+/// Wire-level API identifier for the Math service.
+pub const MATH_API_ID: u16 = 0x0002;
+
 // Re-exports for macro use.
 #[cfg(feature = "embassy")]
 #[doc(hidden)]

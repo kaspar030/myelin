@@ -19,6 +19,7 @@
 
 pub mod codec;
 pub mod framing;
+pub mod mux;
 pub mod routing;
 pub mod transport;
 
@@ -29,3 +30,4 @@ pub use routing::{
     RouterSlotHandle, Sequential,
 };
 pub use transport::{StreamReplyToken, StreamTransport, StreamTransportError};
+pub use mux::{ApiHandler, ApiRouter, MuxError, ServiceApiId};
