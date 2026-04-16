@@ -10,6 +10,12 @@
 //! The layers are composed into a single [`StreamTransport`] that implements
 //! [`ClientTransport`](crate::transport::ClientTransport) and
 //! [`ServerTransport`](crate::transport::ServerTransport).
+//!
+//! ## Routing strategies
+//!
+//! - [`Sequential`] — one request at a time, zero overhead.
+//! - [`MuxedSlots`] — up to N concurrent requests via slot-based routing
+//!   (1-byte slot ID per frame).
 
 pub mod codec;
 pub mod framing;
@@ -18,5 +24,8 @@ pub mod transport;
 
 pub use codec::{Decoder, Encoder, PostcardCodec};
 pub use framing::{FrameReader, FrameWriter, FramingError, LengthPrefixed};
-pub use routing::{ReplyRouter, Sequential};
+pub use routing::{
+    MuxedReplyToken, MuxedSlotGuard, MuxedSlots, MuxedSlots4, MuxedSlots8, ReplyRouter,
+    RouterSlotHandle, Sequential,
+};
 pub use transport::{StreamReplyToken, StreamTransport, StreamTransportError};
