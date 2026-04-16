@@ -70,6 +70,9 @@ pub mod transport_tokio;
 pub mod transport_embassy;
 
 #[cfg(feature = "postcard")]
+pub mod stream;
+
+#[cfg(feature = "postcard")]
 pub mod transport_postcard;
 
 pub use block_on::BlockOn;
