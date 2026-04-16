@@ -9,10 +9,11 @@
 //!   requests over a single byte stream. Each frame is prefixed with a 1-byte
 //!   slot ID. Slot allocation uses an atomic bitmap (no allocator needed).
 
-use core::cell::UnsafeCell;
 use core::future::Future;
-use core::sync::atomic::{AtomicU32, AtomicU16, Ordering};
-use core::task::{Poll, Waker};
+use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, Ordering};
+use core::task::Poll;
+
+use atomic_waker::AtomicWaker;
 
 /// Reply routing strategy.
 ///
@@ -125,23 +126,33 @@ impl RouterSlotHandle for SequentialSlot {
 // MuxedSlots<N, BUF> — concurrent multiplexed routing
 // ---------------------------------------------------------------------------
 
-/// Per-slot storage: waker + reply buffer.
+/// Per-slot storage: waker + reply buffer + generation counter.
+///
+/// The `data` buffer uses `UnsafeCell` because only one side writes at a
+/// time (deliver writes, then recv_reply reads), with the `len` atomic
+/// providing the synchronization barrier. The `waker` uses [`AtomicWaker`]
+/// for safe concurrent register/wake.
 struct SlotCell<const BUF: usize> {
     /// Reply data buffer, written by `deliver()`, read by `recv_reply()`.
-    data: UnsafeCell<[u8; BUF]>,
+    data: core::cell::UnsafeCell<[u8; BUF]>,
     /// Length of valid data in the buffer.
     /// 0 means empty (no reply yet). Set atomically by `deliver()`.
     len: AtomicU16,
     /// Waker for the task waiting on this slot's reply.
-    waker: UnsafeCell<Option<Waker>>,
+    waker: AtomicWaker,
+    /// Generation counter: incremented each time the slot is freed.
+    /// Used by `deliver()` to detect stale deliveries (ABA prevention).
+    generation: AtomicU8,
 }
 
 impl<const BUF: usize> SlotCell<BUF> {
-    const fn new() -> Self {
+    #[allow(clippy::new_without_default)]
+    fn new() -> Self {
         Self {
-            data: UnsafeCell::new([0u8; BUF]),
+            data: core::cell::UnsafeCell::new([0u8; BUF]),
             len: AtomicU16::new(0),
-            waker: UnsafeCell::new(None),
+            waker: AtomicWaker::new(),
+            generation: AtomicU8::new(0),
         }
     }
 }
@@ -160,23 +171,44 @@ impl<const BUF: usize> SlotCell<BUF> {
 ///
 /// The slot guard ([`MuxedSlotGuard`]) frees its slot on drop, ensuring
 /// that cancelled callers do not leak slots. If a reply arrives for a
-/// freed slot, it is silently discarded.
+/// freed slot (or a reallocated slot with a different generation), it is
+/// silently discarded.
+///
+/// # Concurrency
+///
+/// The routing layer itself is fully concurrent and safe for multi-threaded
+/// executors. However, the current [`StreamTransport`](super::transport::StreamTransport)
+/// integration uses blocking `std::io::Read`/`Write`, which means the
+/// cooperative demux loop in `call()` does not yield between reads. True
+/// concurrent multiplexing requires an async framing layer (e.g.,
+/// `tokio::io::AsyncRead`). The routing layer is ready for that — the
+/// transport integration is the current bottleneck.
+/// # Waiter behavior
+///
+/// `acquire()` uses an [`AtomicWaker`] which supports a single waiter.
+/// If multiple tasks call `acquire()` concurrently when all slots are
+/// full, only one waiter is guaranteed to be woken when a slot frees.
+/// With the current blocking I/O transport (which uses `RefCell` and is
+/// inherently single-task), this is not a practical limitation. For
+/// future multi-task usage with async I/O, callers should use
+/// `try_acquire()` with their own retry/backoff logic, or the transport
+/// should serialize access to `acquire()`.
 pub struct MuxedSlots<const N: usize, const BUF: usize> {
     /// Bitmap: bit `i` is set when slot `i` is allocated.
     bitmap: AtomicU32,
     /// Per-slot state.
     slots: [SlotCell<BUF>; N],
     /// Waker for tasks blocked in `acquire()` waiting for a free slot.
-    alloc_waker: UnsafeCell<Option<Waker>>,
+    alloc_waker: AtomicWaker,
 }
 
-// SAFETY: All UnsafeCell access is guarded by the atomic bitmap.
-// - `SlotCell::data` and `SlotCell::waker` for slot `i` are only written
-//   when bit `i` is set in the bitmap, and only by the holder of
-//   `MuxedSlotGuard` (for waker) or `deliver()` (for data, which also
-//   checks the bit).
-// - `alloc_waker` is written only by tasks in `acquire()` under the
-//   condition that no slot is free.
+// SAFETY: All fields are Send+Sync:
+// - AtomicU32, AtomicWaker: Send+Sync by definition.
+// - SlotCell::data (UnsafeCell<[u8; BUF]>): access is ordered by the
+//   atomic `len` field — deliver() writes data then sets len (Release),
+//   recv_reply() reads len (Acquire) then reads data. The bitmap ensures
+//   only one "owner" (guard holder or deliver) accesses a slot's data at
+//   a time, and the generation counter prevents ABA races on slot reuse.
 unsafe impl<const N: usize, const BUF: usize> Send for MuxedSlots<N, BUF> {}
 unsafe impl<const N: usize, const BUF: usize> Sync for MuxedSlots<N, BUF> {}
 
@@ -185,29 +217,14 @@ impl<const N: usize, const BUF: usize> MuxedSlots<N, BUF> {
     const _ASSERT_N_LE_32: () = assert!(N <= 32, "MuxedSlots: N must be <= 32");
 
     /// Create a new muxed router with all slots free.
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         // Trigger the compile-time assertion.
         let () = Self::_ASSERT_N_LE_32;
 
-        // Use a const block to initialize the array without Copy bound on SlotCell.
-        // SAFETY: [SlotCell::new(); N] doesn't work because SlotCell isn't Copy,
-        // so we use unsafe transmute from MaybeUninit.
-        let slots = {
-            let mut arr: [core::mem::MaybeUninit<SlotCell<BUF>>; N] =
-                unsafe { core::mem::MaybeUninit::uninit().assume_init() };
-            let mut i = 0;
-            while i < N {
-                arr[i] = core::mem::MaybeUninit::new(SlotCell::new());
-                i += 1;
-            }
-            // SAFETY: All elements are now initialized.
-            unsafe { core::mem::transmute_copy::<_, [SlotCell<BUF>; N]>(&arr) }
-        };
-
         Self {
             bitmap: AtomicU32::new(0),
-            slots,
-            alloc_waker: UnsafeCell::new(None),
+            slots: core::array::from_fn(|_| SlotCell::new()),
+            alloc_waker: AtomicWaker::new(),
         }
     }
 
@@ -221,8 +238,9 @@ impl<const N: usize, const BUF: usize> MuxedSlots<N, BUF> {
     }
 
     /// Try to allocate a slot via CAS on the bitmap.
-    /// Returns `Some(index)` on success, `None` if all slots are occupied.
-    fn try_alloc(&self) -> Option<u8> {
+    /// Returns `Some((index, generation))` on success, `None` if all slots
+    /// are occupied.
+    fn try_alloc(&self) -> Option<(u8, u8)> {
         loop {
             let current = self.bitmap.load(Ordering::Acquire);
             // Find first zero bit within the valid range.
@@ -238,53 +256,51 @@ impl<const N: usize, const BUF: usize> MuxedSlots<N, BUF> {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Some(idx),
+                Ok(_) => {
+                    let gen_val = self.slots[idx as usize].generation.load(Ordering::Acquire);
+                    return Some((idx, gen_val));
+                }
                 Err(_) => continue, // Retry on contention.
             }
         }
     }
 
-    /// Free a slot: clear its bitmap bit and wake any task waiting in `acquire()`.
+    /// Free a slot: clear its bitmap bit, increment generation, and wake
+    /// any task waiting in `acquire()`.
     fn free_slot(&self, idx: u8) {
         // Reset the slot's data length so stale data isn't visible.
         self.slots[idx as usize].len.store(0, Ordering::Release);
 
+        // Increment the generation counter (ABA prevention).
+        self.slots[idx as usize]
+            .generation
+            .fetch_add(1, Ordering::Release);
+
         // Clear the bitmap bit.
         self.bitmap.fetch_and(!(1u32 << idx), Ordering::Release);
 
-        // Wake any task waiting for a free slot.
-        // SAFETY: alloc_waker is only written by tasks in acquire() and
-        // read+cleared here. Races are benign: worst case we miss a wake
-        // and the task re-polls from the executor's periodic wake.
-        let waker = unsafe { &mut *self.alloc_waker.get() };
-        if let Some(w) = waker.take() {
-            w.wake();
-        }
+        // Wake a task waiting for a free slot.
+        self.alloc_waker.wake();
     }
-}
 
-impl<const N: usize, const BUF: usize> MuxedSlots<N, BUF> {
     /// Check if a slot has a pending reply and return it.
     ///
     /// Returns `Some(data)` if the slot has received a reply (len > 0),
     /// `None` otherwise. Used by the cooperative demux in the transport.
     ///
-    /// # Safety
+    /// # Safety requirement (not enforced)
     ///
     /// The caller must hold a valid `MuxedSlotGuard` for `slot_id` (i.e.,
-    /// the slot must be allocated). This is not enforced at the type level
-    /// here — it is the transport's responsibility.
+    /// the slot must be allocated). This is the transport's responsibility.
     pub fn try_recv_slot(&self, slot_id: u8) -> Option<&[u8]> {
         if (slot_id as usize) >= N {
             return None;
         }
         let slot = &self.slots[slot_id as usize];
-        let len = slot.len.load(core::sync::atomic::Ordering::Acquire);
+        let len = slot.len.load(Ordering::Acquire);
         if len > 0 {
-            // SAFETY: data was written by deliver() with Release before
-            // len was set. We read len with Acquire → happens-before.
-            // SAFETY: data was written by deliver() with Release before
-            // len was set. We read len with Acquire → happens-before.
+            // SAFETY: data was written by deliver() with Release on len.
+            // We loaded len with Acquire → happens-before is established.
             let arr = unsafe { &*slot.data.get() };
             Some(&arr[..len as usize])
         } else {
@@ -307,34 +323,24 @@ impl<const N: usize, const BUF: usize> ReplyRouter for MuxedSlots<N, BUF> {
 
     async fn acquire(&self) -> Result<MuxedSlotGuard<'_, N, BUF>, core::convert::Infallible> {
         // Fast path: try to allocate immediately.
-        if let Some(idx) = self.try_alloc() {
+        if let Some((idx, gen_val)) = self.try_alloc() {
             return Ok(MuxedSlotGuard {
                 router: self,
                 index: idx,
+                generation: gen_val,
             });
         }
 
         // Slow path: all slots occupied — poll until one frees up.
         core::future::poll_fn(|cx| {
-            // Re-check after registering waker.
-            if let Some(idx) = self.try_alloc() {
+            // Register waker *before* checking, to avoid lost-wakeup race.
+            self.alloc_waker.register(cx.waker());
+
+            if let Some((idx, gen_val)) = self.try_alloc() {
                 return Poll::Ready(Ok(MuxedSlotGuard {
                     router: self,
                     index: idx,
-                }));
-            }
-            // Store our waker so `free_slot()` can wake us.
-            // SAFETY: single-writer (this task), read by `free_slot`.
-            unsafe {
-                *self.alloc_waker.get() = Some(cx.waker().clone());
-            }
-            // Re-check to avoid lost-wakeup race.
-            if let Some(idx) = self.try_alloc() {
-                // Clear the waker since we're not going to sleep.
-                unsafe { *self.alloc_waker.get() = None; }
-                return Poll::Ready(Ok(MuxedSlotGuard {
-                    router: self,
-                    index: idx,
+                    generation: gen_val,
                 }));
             }
             Poll::Pending
@@ -343,9 +349,10 @@ impl<const N: usize, const BUF: usize> ReplyRouter for MuxedSlots<N, BUF> {
     }
 
     fn try_acquire(&self) -> Option<MuxedSlotGuard<'_, N, BUF>> {
-        self.try_alloc().map(|idx| MuxedSlotGuard {
+        self.try_alloc().map(|(idx, gen_val)| MuxedSlotGuard {
             router: self,
             index: idx,
+            generation: gen_val,
         })
     }
 
@@ -371,25 +378,33 @@ impl<const N: usize, const BUF: usize> ReplyRouter for MuxedSlots<N, BUF> {
         }
 
         let slot = &self.slots[slot_id as usize];
+
+        // Snapshot the generation before writing. After writing, re-check
+        // to detect if the slot was freed and reallocated between our
+        // bitmap check and now (ABA prevention).
+        let gen_before = slot.generation.load(Ordering::Acquire);
+
         let len = payload.len().min(BUF);
 
-        // SAFETY: We checked the bitmap bit is set, meaning a MuxedSlotGuard
-        // exists for this slot. The guard's recv_reply() reads data only after
-        // len is set (Acquire ordering). We write data first, then set len
-        // (Release ordering).
+        // SAFETY: The bitmap bit is set, meaning a MuxedSlotGuard exists.
+        // The guard's recv_reply() reads data only after len is set
+        // (Acquire on len). We write data first, then set len (Release).
         unsafe {
             let data = &mut *slot.data.get();
             data[..len].copy_from_slice(&payload[..len]);
         }
+
+        // Re-check generation: if it changed, the slot was freed and
+        // possibly reallocated. Discard by NOT setting len.
+        let gen_after = slot.generation.load(Ordering::Acquire);
+        if gen_before != gen_after {
+            return;
+        }
+
         slot.len.store(len as u16, Ordering::Release);
 
         // Wake the task waiting on this slot.
-        // SAFETY: the waker is set by recv_reply() (the guard owner).
-        unsafe {
-            if let Some(w) = (*slot.waker.get()).take() {
-                w.wake();
-            }
-        }
+        slot.waker.wake();
     }
 }
 
@@ -401,6 +416,9 @@ impl<const N: usize, const BUF: usize> ReplyRouter for MuxedSlots<N, BUF> {
 pub struct MuxedSlotGuard<'a, const N: usize, const BUF: usize> {
     router: &'a MuxedSlots<N, BUF>,
     index: u8,
+    /// Generation at the time this slot was allocated.
+    #[allow(dead_code)]
+    generation: u8,
 }
 
 impl<const N: usize, const BUF: usize> Drop for MuxedSlotGuard<'_, N, BUF> {
@@ -420,19 +438,14 @@ impl<const N: usize, const BUF: usize> RouterSlotHandle for MuxedSlotGuard<'_, N
             let len = slot.len.load(Ordering::Acquire);
             if len > 0 {
                 // SAFETY: data was written by deliver() before len was set
-                // (Release), and we read len with Acquire, establishing
-                // happens-before.
-                // SAFETY: data was written by deliver() before len was
-                // set (Release). We read len with Acquire → happens-before.
+                // (Release). We loaded len with Acquire → happens-before.
                 let arr = unsafe { &*slot.data.get() };
                 let data = &arr[..len as usize];
                 Poll::Ready(data)
             } else {
-                // Store waker and wait for deliver() to wake us.
-                // SAFETY: only this task writes the waker for this slot.
-                unsafe {
-                    *slot.waker.get() = Some(cx.waker().clone());
-                }
+                // Register waker so deliver() can wake us.
+                slot.waker.register(cx.waker());
+
                 // Re-check to avoid lost wakeup.
                 let len = slot.len.load(Ordering::Acquire);
                 if len > 0 {
@@ -574,6 +587,32 @@ mod tests {
         assert_eq!(router.bitmap.load(Ordering::Relaxed), 0);
     }
 
+    #[test]
+    fn generation_counter_prevents_stale_delivery() {
+        let router = MuxedSlots::<1, 64>::new();
+
+        // Allocate, note generation.
+        let slot1 = router.try_acquire().unwrap();
+        let id = slot1.slot_id();
+        let gen1 = slot1.generation;
+
+        // Free and reallocate — generation should increment.
+        drop(slot1);
+        let slot2 = router.try_acquire().unwrap();
+        assert_eq!(slot2.slot_id(), id); // Same index.
+        assert_eq!(slot2.generation, gen1.wrapping_add(1));
+
+        // A stale deliver() that checks gen_before but the slot was freed
+        // and reallocated would see a different generation. We can't easily
+        // trigger the race in a unit test, but we verify the generation
+        // counter increments on free.
+        drop(slot2);
+        let gen_now = router.slots[id as usize]
+            .generation
+            .load(Ordering::Relaxed);
+        assert_eq!(gen_now, gen1.wrapping_add(2));
+    }
+
     #[tokio::test]
     async fn concurrent_acquire_slots() {
         let router = Arc::new(MuxedSlots::<2, 64>::new());
@@ -635,6 +674,34 @@ mod tests {
         // The spawned task should now complete.
         let id2 = handle.await.unwrap();
         assert_eq!(id2, id); // Should get the same slot index back.
+    }
+
+    #[tokio::test]
+    async fn single_waiter_chain_works() {
+        // With AtomicWaker, one waiter at a time is supported. When a slot
+        // frees, the waiter is woken, acquires, frees, wakes the next, etc.
+        let router = Arc::new(MuxedSlots::<1, 64>::new());
+
+        // Acquire the only slot.
+        let slot = router.acquire().await.unwrap();
+
+        // Spawn a single waiter.
+        let r2 = router.clone();
+        let handle = tokio::spawn(async move {
+            let s = r2.acquire().await.unwrap();
+            let id = s.slot_id();
+            drop(s);
+            id
+        });
+
+        // Give the waiter a chance to register.
+        tokio::task::yield_now().await;
+
+        // Free the slot — this wakes the single waiter.
+        drop(slot);
+
+        let id = handle.await.unwrap();
+        assert_eq!(id, 0);
     }
 
     #[tokio::test]

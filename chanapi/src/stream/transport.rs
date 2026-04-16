@@ -188,6 +188,15 @@ where
 
     /// Muxed call: acquire slot → tag frame → send → cooperative demux → return.
     ///
+    /// # Blocking I/O limitation
+    ///
+    /// The current framing layer uses blocking `std::io::Read`, so the
+    /// cooperative demux loop does not yield between reads. True concurrent
+    /// multiplexing requires an async framing layer (e.g.,
+    /// `tokio::io::AsyncRead`). The routing layer ([`MuxedSlots`]) is fully
+    /// concurrent and ready for async I/O — the transport integration is
+    /// the current bottleneck.
+    ///
     /// # Cancel Safety
     ///
     /// The slot guard is RAII — dropping the future frees the slot. If the
