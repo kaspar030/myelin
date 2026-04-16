@@ -79,6 +79,12 @@ pub use block_on::BlockOn;
 pub use error::{CallError, TransportResult};
 pub use transport::{ClientTransport, ServerTransport};
 
+/// Generate channel-API plumbing from an async trait definition.
+///
+/// See the [`chanapi_macros::service`] documentation for the full input
+/// contract and emitted items.
+pub use chanapi_macros::service;
+
 // Re-export paste for use by compose_service! macro.
 #[doc(hidden)]
 pub use paste::paste;
