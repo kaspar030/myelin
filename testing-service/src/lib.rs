@@ -1,10 +1,10 @@
 #![no_std]
 #![allow(async_fn_in_trait)]
 
-//! Greeter service definition.
+//! Greeter and Math service definitions.
 //!
-//! This is a hand-written example of what `#[chanapi::service]` would generate.
-//! The trait, request/response enums, client struct, and server dispatch loop
+//! These are hand-written examples of what `#[chanapi::service]` would generate.
+//! The traits, request/response enums, client structs, and server dispatch
 //! are all transport-generic.
 
 use chanapi::transport::{ClientTransport, ServerTransport};
@@ -16,6 +16,10 @@ use chanapi::TransportResult;
 pub use static_cell;
 #[doc(hidden)]
 pub use paste;
+
+// =============================================================================
+// Greeter Service
+// =============================================================================
 
 // ===== The trait (source of truth) =====
 
@@ -240,12 +244,7 @@ where
 {
     loop {
         let (req, token) = transport.recv().await?;
-        let resp = match req {
-            GreeterRequest::Greet { name } => {
-                GreeterResponse::Greet(svc.greet(name.as_str()).await)
-            }
-            GreeterRequest::Health => GreeterResponse::Health(svc.health().await),
-        };
+        let resp = greeter_dispatch(svc, req).await;
         let _ = transport.reply(token, resp).await;
     }
 }
@@ -262,12 +261,268 @@ where
 {
     loop {
         let (req, token) = block_on.block_on(transport.recv())?;
-        let resp = match req {
-            GreeterRequest::Greet { name } => {
-                GreeterResponse::Greet(svc.greet(name.as_str()))
-            }
-            GreeterRequest::Health => GreeterResponse::Health(svc.health()),
-        };
+        let resp = greeter_dispatch_sync(svc, req);
         let _ = block_on.block_on(transport.reply(token, resp));
     }
 }
+
+/// Dispatch a single greeter request to the async service implementation.
+pub async fn greeter_dispatch<S: GreeterService>(svc: &S, req: GreeterRequest) -> GreeterResponse {
+    match req {
+        GreeterRequest::Greet { name } => {
+            GreeterResponse::Greet(svc.greet(name.as_str()).await)
+        }
+        GreeterRequest::Health => GreeterResponse::Health(svc.health().await),
+    }
+}
+
+/// Dispatch a single greeter request to the sync service implementation.
+pub fn greeter_dispatch_sync<S: GreeterServiceSync>(svc: &S, req: GreeterRequest) -> GreeterResponse {
+    match req {
+        GreeterRequest::Greet { name } => {
+            GreeterResponse::Greet(svc.greet(name.as_str()))
+        }
+        GreeterRequest::Health => GreeterResponse::Health(svc.health()),
+    }
+}
+
+// =============================================================================
+// Math Service
+// =============================================================================
+
+// #[chanapi::service]
+// pub trait MathService {
+//     async fn add(&self, a: i32, b: i32) -> i64;
+//     async fn multiply(&self, a: i32, b: i32) -> i64;
+// }
+
+// -- Request / Response enums --
+
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum MathRequest {
+    Add { a: i32, b: i32 },
+    Multiply { a: i32, b: i32 },
+}
+
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum MathResponse {
+    Add(i64),
+    Multiply(i64),
+}
+
+// -- Client struct --
+
+pub struct MathClient<T> {
+    transport: T,
+}
+
+impl<T> MathClient<T>
+where
+    T: ClientTransport<MathRequest, MathResponse>,
+{
+    pub fn new(transport: T) -> Self {
+        Self { transport }
+    }
+
+    pub async fn add(
+        &self,
+        a: i32,
+        b: i32,
+    ) -> <T::Error as TransportResult<i64>>::Output
+    where
+        T::Error: TransportResult<i64>,
+    {
+        let result = self
+            .transport
+            .call(MathRequest::Add { a, b })
+            .await;
+
+        TransportResult::into_output(result.map(|resp| match resp {
+            MathResponse::Add(v) => v,
+            _ => unreachable!(),
+        }))
+    }
+
+    pub async fn multiply(
+        &self,
+        a: i32,
+        b: i32,
+    ) -> <T::Error as TransportResult<i64>>::Output
+    where
+        T::Error: TransportResult<i64>,
+    {
+        let result = self
+            .transport
+            .call(MathRequest::Multiply { a, b })
+            .await;
+
+        TransportResult::into_output(result.map(|resp| match resp {
+            MathResponse::Multiply(v) => v,
+            _ => unreachable!(),
+        }))
+    }
+}
+
+// -- Sync (blocking) client struct --
+
+pub struct MathClientSync<T, B> {
+    inner: MathClient<T>,
+    block_on: B,
+}
+
+impl<T, B> MathClientSync<T, B>
+where
+    T: ClientTransport<MathRequest, MathResponse>,
+    B: chanapi::BlockOn,
+{
+    pub fn new(inner: MathClient<T>, block_on: B) -> Self {
+        Self { inner, block_on }
+    }
+
+    pub fn add(
+        &self,
+        a: i32,
+        b: i32,
+    ) -> <T::Error as TransportResult<i64>>::Output
+    where
+        T::Error: TransportResult<i64>,
+    {
+        self.block_on.block_on(self.inner.add(a, b))
+    }
+
+    pub fn multiply(
+        &self,
+        a: i32,
+        b: i32,
+    ) -> <T::Error as TransportResult<i64>>::Output
+    where
+        T::Error: TransportResult<i64>,
+    {
+        self.block_on.block_on(self.inner.multiply(a, b))
+    }
+}
+
+// -- Embassy convenience types --
+
+#[cfg(feature = "embassy")]
+pub type MathEmbassyService<M, const CHANNEL_DEPTH: usize> =
+    chanapi::transport_embassy::EmbassyService<M, MathRequest, MathResponse, CHANNEL_DEPTH>;
+
+#[cfg(feature = "embassy")]
+pub type MathEmbassyClientTransport<'a, M, const CHANNEL_DEPTH: usize> =
+    chanapi::transport_embassy::EmbassyClient<'a, M, MathRequest, MathResponse, CHANNEL_DEPTH>;
+
+// -- Tokio convenience types --
+
+#[cfg(feature = "tokio")]
+pub type MathTokioService =
+    chanapi::transport_tokio::TokioService<MathRequest, MathResponse>;
+
+#[cfg(feature = "embassy")]
+#[macro_export]
+macro_rules! math_embassy_service {
+    ($name:ident, $mutex:ty, $depth:expr) => {
+        $crate::paste::paste! {
+            static [<__MATH_SERVICE_ $name:upper>]: $crate::MathEmbassyService<$mutex, $depth> =
+                $crate::MathEmbassyService::new();
+
+            macro_rules! [<$name _client>] {
+                () => {{
+                    static CELL: $crate::static_cell::StaticCell<
+                        $crate::MathEmbassyClientTransport<'static, $mutex, $depth>,
+                    > = $crate::static_cell::StaticCell::new();
+                    $crate::MathClient::new(&*CELL.init([<__MATH_SERVICE_ $name:upper>].client()))
+                }};
+            }
+
+            macro_rules! [<$name _server>] {
+                () => {
+                    [<__MATH_SERVICE_ $name:upper>].server()
+                };
+            }
+
+            macro_rules! [<$name _client_sync>] {
+                ($block_on:expr) => {{
+                    static CELL: $crate::static_cell::StaticCell<
+                        $crate::MathEmbassyClientTransport<'static, $mutex, $depth>,
+                    > = $crate::static_cell::StaticCell::new();
+                    $crate::MathClientSync::new(
+                        $crate::MathClient::new(&*CELL.init([<__MATH_SERVICE_ $name:upper>].client())),
+                        $block_on,
+                    )
+                }};
+            }
+        }
+    };
+}
+
+// -- Service implementation traits --
+
+/// Async service trait for math operations.
+pub trait MathService {
+    async fn add(&self, a: i32, b: i32) -> i64;
+    async fn multiply(&self, a: i32, b: i32) -> i64;
+}
+
+/// Sync service trait for math operations.
+pub trait MathServiceSync {
+    fn add(&self, a: i32, b: i32) -> i64;
+    fn multiply(&self, a: i32, b: i32) -> i64;
+}
+
+// -- Server dispatch --
+
+/// Run the async math service loop.
+pub async fn math_serve<S, T>(svc: &S, transport: &mut T) -> Result<(), T::Error>
+where
+    S: MathService,
+    T: ServerTransport<MathRequest, MathResponse>,
+{
+    loop {
+        let (req, token) = transport.recv().await?;
+        let resp = math_dispatch(svc, req).await;
+        let _ = transport.reply(token, resp).await;
+    }
+}
+
+/// Run the sync math service loop.
+pub fn math_serve_sync<S, T, B>(svc: &S, transport: &mut T, block_on: &B) -> Result<(), T::Error>
+where
+    S: MathServiceSync,
+    T: ServerTransport<MathRequest, MathResponse>,
+    B: chanapi::BlockOn,
+{
+    loop {
+        let (req, token) = block_on.block_on(transport.recv())?;
+        let resp = math_dispatch_sync(svc, req);
+        let _ = block_on.block_on(transport.reply(token, resp));
+    }
+}
+
+/// Dispatch a single math request to the async service implementation.
+pub async fn math_dispatch<S: MathService>(svc: &S, req: MathRequest) -> MathResponse {
+    match req {
+        MathRequest::Add { a, b } => MathResponse::Add(svc.add(a, b).await),
+        MathRequest::Multiply { a, b } => MathResponse::Multiply(svc.multiply(a, b).await),
+    }
+}
+
+/// Dispatch a single math request to the sync service implementation.
+pub fn math_dispatch_sync<S: MathServiceSync>(svc: &S, req: MathRequest) -> MathResponse {
+    match req {
+        MathRequest::Add { a, b } => MathResponse::Add(svc.add(a, b)),
+        MathRequest::Multiply { a, b } => MathResponse::Multiply(svc.multiply(a, b)),
+    }
+}
+
+// =============================================================================
+// Composed Service: Greeter + Math
+// =============================================================================
+
+chanapi::compose_service!(
+    Combined,
+    [Greeter, greeter_dispatch, greeter_dispatch_sync],
+    [Math, math_dispatch, math_dispatch_sync],
+);

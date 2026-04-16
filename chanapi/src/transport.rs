@@ -35,6 +35,18 @@ pub trait ClientTransport<Req, Resp> {
     fn call(&self, req: Req) -> impl Future<Output = Result<Resp, Self::Error>>;
 }
 
+// Blanket impl: &T is a ClientTransport if T is.
+impl<T, Req, Resp> ClientTransport<Req, Resp> for &T
+where
+    T: ClientTransport<Req, Resp>,
+{
+    type Error = T::Error;
+
+    fn call(&self, req: Req) -> impl Future<Output = Result<Resp, Self::Error>> {
+        (**self).call(req)
+    }
+}
+
 /// Server side of a service transport.
 ///
 /// The generated server dispatch loop uses this to receive requests and
