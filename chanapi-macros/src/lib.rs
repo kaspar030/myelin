@@ -20,6 +20,15 @@ use quote::quote;
 /// 3. The original trait, preserved verbatim.
 /// 4. `{Stem}ServiceSync` — a sync mirror of the trait with every method's
 ///    `async` stripped.
+/// 5. `{Stem}Client<T>` — async client struct with one `async fn` per trait
+///    method that calls `T::call(...).await` and unwraps the matching
+///    response variant.
+/// 6. `{Stem}ClientSync<T, B>` — sync wrapper around `{Stem}Client<T>` that
+///    blocks each async call via `B: BlockOn`.
+/// 7. `{stem}_dispatch` / `{stem}_dispatch_sync` — match on a request and
+///    invoke the corresponding service trait method, returning a response.
+/// 8. `{stem}_serve` / `{stem}_serve_sync` — `recv → dispatch → reply` loops
+///    over a `ServerTransport`.
 ///
 /// The "stem" is derived by stripping a trailing `Service` from the trait
 /// name (e.g. `GreeterService` → `Greeter`). The trait name must end in
@@ -39,9 +48,9 @@ use quote::quote;
 ///
 /// # Unstable API surface
 ///
-/// Additional items (clients, dispatch, serve, transport aliases, embassy
-/// glue, `api_id` constant) are emitted by later subtasks in this workstream
-/// and are not produced by the current revision.
+/// Additional items (transport aliases, embassy glue, `api_id` constant) are
+/// emitted by later subtasks in this workstream and are not produced by the
+/// current revision.
 #[proc_macro_attribute]
 pub fn service(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Subtask 1: `attr` is ignored. Subtask 4 will parse `api_id = ...`.
@@ -57,11 +66,23 @@ pub fn service(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let resp = emit::response_enum(&svc);
             let async_t = emit::async_trait(&svc);
             let sync_t = emit::sync_trait(&svc);
+            let client = emit::client_struct(&svc);
+            let client_sync = emit::client_sync_struct(&svc);
+            let dispatch = emit::dispatch_fn(&svc);
+            let dispatch_sync = emit::dispatch_sync_fn(&svc);
+            let serve = emit::serve_fn(&svc);
+            let serve_sync = emit::serve_sync_fn(&svc);
             quote! {
                 #req
                 #resp
                 #async_t
                 #sync_t
+                #client
+                #client_sync
+                #dispatch
+                #dispatch_sync
+                #serve
+                #serve_sync
             }
             .into()
         }
@@ -394,5 +415,290 @@ mod tests {
             }
         });
         assert!(msg.contains("only `fn` items"), "msg: {msg}");
+    }
+
+    // =========================================================================
+    // Emit tests for client / client-sync / dispatch / serve.
+    // We assert shape via substring matching against the canonical
+    // (whitespace-padded) `TokenStream::to_string()` output. Compile-level
+    // verification happens downstream in subtask 5's trybuild fixtures.
+    // =========================================================================
+
+    fn greeter() -> ServiceTrait {
+        let item: syn::ItemTrait = syn::parse_quote! {
+            pub trait GreeterService {
+                async fn greet(&self, name: String) -> String;
+                fn health(&self) -> bool;
+            }
+        };
+        ServiceTrait::parse(item).unwrap()
+    }
+
+    #[test]
+    fn client_struct_shape() {
+        let svc = greeter();
+        let got = canon(emit::client_struct(&svc));
+        assert!(got.contains("pub struct GreeterClient < T >"), "got: {got}");
+        assert!(
+            got.contains(":: chanapi :: ClientTransport < GreeterRequest , GreeterResponse >"),
+            "got: {got}"
+        );
+        assert!(got.contains("pub fn new (transport : T)"), "got: {got}");
+        // Async client method even for sync trait method.
+        assert!(
+            got.contains("pub async fn greet (& self , name : String)"),
+            "got: {got}"
+        );
+        assert!(
+            got.contains("pub async fn health (& self ,)"),
+            "got: {got}"
+        );
+        // Return-type shape uses `TransportResult<Ret>::Output`.
+        assert!(
+            got.contains("< T :: Error as :: chanapi :: TransportResult < String >> :: Output"),
+            "got: {got}"
+        );
+        assert!(
+            got.contains("< T :: Error as :: chanapi :: TransportResult < bool >> :: Output"),
+            "got: {got}"
+        );
+        // Body dispatches through transport.call.
+        assert!(
+            got.contains("self . transport . call (GreeterRequest :: Greet { name }) . await"),
+            "got: {got}"
+        );
+        assert!(
+            got.contains("self . transport . call (GreeterRequest :: Health) . await"),
+            "got: {got}"
+        );
+        assert!(
+            got.contains("GreeterResponse :: Greet (v) => v"),
+            "got: {got}"
+        );
+    }
+
+    #[test]
+    fn client_struct_unit_return_uses_unit_param() {
+        let item: syn::ItemTrait = syn::parse_quote! {
+            pub trait PingService {
+                fn ping(&self);
+            }
+        };
+        let svc = ServiceTrait::parse(item).unwrap();
+        let got = canon(emit::client_struct(&svc));
+        // Unit return → TransportResult<()>.
+        assert!(
+            got.contains(":: chanapi :: TransportResult < () >"),
+            "got: {got}"
+        );
+        // Match arm pattern must NOT have a payload — response variant is unit.
+        assert!(
+            got.contains("PingResponse :: Ping => ()"),
+            "expected unit-variant pattern; got: {got}"
+        );
+        assert!(
+            !got.contains("PingResponse :: Ping (v)"),
+            "must not pattern-match a payload on unit response variant; got: {got}"
+        );
+    }
+
+    #[test]
+    fn client_sync_struct_shape() {
+        let svc = greeter();
+        let got = canon(emit::client_sync_struct(&svc));
+        assert!(
+            got.contains("pub struct GreeterClientSync < T , B >"),
+            "got: {got}"
+        );
+        assert!(got.contains("inner : GreeterClient < T >"), "got: {got}");
+        assert!(got.contains("block_on : B"), "got: {got}");
+        assert!(got.contains(": :: chanapi :: BlockOn"), "got: {got}");
+        // Sync wrapper methods are plain `fn` with same return-type bound.
+        assert!(
+            got.contains("pub fn greet (& self , name : String)"),
+            "got: {got}"
+        );
+        assert!(
+            got.contains("self . block_on . block_on (self . inner . greet (name))"),
+            "got: {got}"
+        );
+        // Where-clause carries through.
+        assert!(
+            got.contains("T :: Error : :: chanapi :: TransportResult < String >"),
+            "got: {got}"
+        );
+    }
+
+    #[test]
+    fn dispatch_fn_async_and_sync_method_calls() {
+        let svc = greeter();
+        let got = canon(emit::dispatch_fn(&svc));
+        assert!(
+            got.contains("pub async fn greeter_dispatch < S : GreeterService >"),
+            "got: {got}"
+        );
+        assert!(got.contains("req : GreeterRequest"), "got: {got}");
+        // Async trait method gets `.await`.
+        assert!(
+            got.contains("GreeterResponse :: Greet (svc . greet (name) . await)"),
+            "got: {got}"
+        );
+        // Sync trait method must NOT get `.await` from the async dispatch fn.
+        assert!(
+            got.contains("GreeterResponse :: Health (svc . health ())"),
+            "got: {got}"
+        );
+        assert!(
+            !got.contains("svc . health () . await"),
+            "sync method must not be awaited; got: {got}"
+        );
+    }
+
+    #[test]
+    fn dispatch_sync_fn_no_await_anywhere() {
+        let svc = greeter();
+        let got = canon(emit::dispatch_sync_fn(&svc));
+        assert!(
+            got.contains("pub fn greeter_dispatch_sync < S : GreeterServiceSync >"),
+            "got: {got}"
+        );
+        assert!(!got.contains(". await"), "got: {got}");
+        assert!(
+            got.contains("GreeterResponse :: Greet (svc . greet (name))"),
+            "got: {got}"
+        );
+        assert!(
+            got.contains("GreeterResponse :: Health (svc . health ())"),
+            "got: {got}"
+        );
+    }
+
+    #[test]
+    fn dispatch_unit_return_emits_unit_variant() {
+        let item: syn::ItemTrait = syn::parse_quote! {
+            pub trait PingService {
+                async fn ping(&self);
+            }
+        };
+        let svc = ServiceTrait::parse(item).unwrap();
+        let got = canon(emit::dispatch_fn(&svc));
+        // Side-effecting call followed by unit variant — never `Ping(())`.
+        assert!(got.contains("svc . ping () . await ;"), "got: {got}");
+        assert!(got.contains("PingResponse :: Ping"), "got: {got}");
+        assert!(!got.contains("PingResponse :: Ping ("), "got: {got}");
+    }
+
+    #[test]
+    fn dispatch_multi_arg_struct_pattern() {
+        let item: syn::ItemTrait = syn::parse_quote! {
+            pub trait MathService {
+                async fn add(&self, a: i32, b: i32) -> i64;
+            }
+        };
+        let svc = ServiceTrait::parse(item).unwrap();
+        let got = canon(emit::dispatch_fn(&svc));
+        assert!(
+            got.contains("MathRequest :: Add { a , b }"),
+            "got: {got}"
+        );
+        assert!(
+            got.contains("MathResponse :: Add (svc . add (a , b) . await)"),
+            "got: {got}"
+        );
+    }
+
+    #[test]
+    fn serve_fn_shape() {
+        let svc = greeter();
+        let got = canon(emit::serve_fn(&svc));
+        assert!(
+            got.contains("pub async fn greeter_serve < S , T >"),
+            "got: {got}"
+        );
+        assert!(got.contains("S : GreeterService"), "got: {got}");
+        assert!(
+            got.contains(
+                "T : :: chanapi :: ServerTransport < GreeterRequest , GreeterResponse >"
+            ),
+            "got: {got}"
+        );
+        assert!(got.contains("transport . recv () . await ?"), "got: {got}");
+        assert!(
+            got.contains("greeter_dispatch (svc , req) . await"),
+            "got: {got}"
+        );
+        assert!(
+            got.contains("transport . reply (token , resp) . await"),
+            "got: {got}"
+        );
+    }
+
+    #[test]
+    fn serve_sync_fn_shape() {
+        let svc = greeter();
+        let got = canon(emit::serve_sync_fn(&svc));
+        assert!(
+            got.contains("pub fn greeter_serve_sync < S , T , B >"),
+            "got: {got}"
+        );
+        assert!(got.contains("S : GreeterServiceSync"), "got: {got}");
+        assert!(got.contains("B : :: chanapi :: BlockOn"), "got: {got}");
+        // recv & reply are wrapped in block_on; dispatch_sync called directly.
+        assert!(
+            got.contains("block_on . block_on (transport . recv ()) ?"),
+            "got: {got}"
+        );
+        assert!(
+            got.contains("greeter_dispatch_sync (svc , req)"),
+            "got: {got}"
+        );
+        assert!(
+            got.contains("block_on . block_on (transport . reply (token , resp))"),
+            "got: {got}"
+        );
+    }
+
+    #[test]
+    fn snake_case_stem_for_dispatch_idents() {
+        let item: syn::ItemTrait = syn::parse_quote! {
+            pub trait FooBarService {
+                fn a(&self) -> u32;
+            }
+        };
+        let svc = ServiceTrait::parse(item).unwrap();
+        assert!(
+            canon(emit::dispatch_fn(&svc)).contains("fn foo_bar_dispatch <"),
+            "expected snake_case stem in dispatch fn ident"
+        );
+        assert!(
+            canon(emit::serve_fn(&svc)).contains("fn foo_bar_serve <"),
+            "expected snake_case stem in serve fn ident"
+        );
+    }
+
+    #[test]
+    fn visibility_propagates_to_clients_and_dispatch() {
+        let item: syn::ItemTrait = syn::parse_quote! {
+            pub(crate) trait FooService {
+                fn a(&self) -> u32;
+            }
+        };
+        let svc = ServiceTrait::parse(item).unwrap();
+        assert!(
+            canon(emit::client_struct(&svc)).contains("pub (crate) struct FooClient"),
+            "vis on client struct"
+        );
+        assert!(
+            canon(emit::client_sync_struct(&svc)).contains("pub (crate) struct FooClientSync"),
+            "vis on sync client struct"
+        );
+        assert!(
+            canon(emit::dispatch_fn(&svc)).contains("pub (crate) async fn foo_dispatch"),
+            "vis on dispatch fn"
+        );
+        assert!(
+            canon(emit::serve_sync_fn(&svc)).contains("pub (crate) fn foo_serve_sync"),
+            "vis on serve_sync fn"
+        );
     }
 }

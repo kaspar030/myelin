@@ -27,11 +27,8 @@ pub struct ServiceTrait {
 
 /// One method of a service trait.
 pub struct ServiceMethod {
-    /// Verbatim signature copied from the trait.
-    ///
-    /// Currently unused inside this crate but exposed for later subtasks
-    /// that emit client/dispatch/serve items.
-    #[allow(dead_code)]
+    /// Verbatim signature copied from the trait. The method ident lives at
+    /// `sig.ident`; client/dispatch/serve emit re-uses this directly.
     pub sig: syn::Signature,
     /// PascalCase variant ident, e.g. `Greet`, spanned at the original
     /// method ident.
@@ -40,10 +37,10 @@ pub struct ServiceMethod {
     pub args: Vec<ServiceArg>,
     /// Return type kind.
     pub ret: ReturnKind,
-    /// Whether the method was declared `async`.
-    ///
-    /// Currently unused — only needed once clients/dispatch are emitted.
-    #[allow(dead_code)]
+    /// Whether the method was declared `async`. Drives the `.await` suffix
+    /// emitted by `{stem}_dispatch` (sync trait methods are called without
+    /// `.await` from the async dispatch fn to avoid a spurious state
+    /// machine).
     pub is_async: bool,
 }
 
