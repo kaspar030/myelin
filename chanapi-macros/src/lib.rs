@@ -29,6 +29,15 @@ use quote::quote;
 ///    invoke the corresponding service trait method, returning a response.
 /// 8. `{stem}_serve` / `{stem}_serve_sync` — `recv → dispatch → reply` loops
 ///    over a `ServerTransport`.
+/// 9. Transport convenience type aliases, gated on the **consuming crate's**
+///    features (`#[cfg(feature = "tokio")]` / `#[cfg(feature = "embassy")]`):
+///    - `{Stem}TokioService` — `TokioService<{Stem}Request, {Stem}Response>`
+///    - `{Stem}EmbassyService<M, const CHANNEL_DEPTH: usize>`
+///    - `{Stem}EmbassyClientTransport<'a, M, const CHANNEL_DEPTH: usize>`
+/// 10. `{stem}_embassy_service!` — a `#[macro_export] macro_rules!` gated on
+///     `#[cfg(feature = "embassy")]` that instantiates a static embassy
+///     service plus three nested `*_client!` / `*_server!` / `*_client_sync!`
+///     helper macros. Takes `($name:ident, $mutex:ty, $depth:expr)`.
 ///
 /// The "stem" is derived by stripping a trailing `Service` from the trait
 /// name (e.g. `GreeterService` → `Greeter`). The trait name must end in
@@ -37,6 +46,25 @@ use quote::quote;
 /// Both enums derive `Debug`, and derive `serde::Serialize` and
 /// `serde::Deserialize` when the downstream crate's `serde` feature is
 /// enabled.
+///
+/// # Consumer crate feature conventions
+///
+/// Items 9 and 10 are gated on `feature = "tokio"` / `feature = "embassy"`
+/// of the *consuming* crate (not of `chanapi-macros`). The emitted
+/// `#[cfg(feature = "...")]` attributes are literal — consumers must declare
+/// matching features, typically forwarding to `chanapi`'s own features:
+///
+/// ```toml
+/// [features]
+/// tokio   = ["chanapi/tokio"]
+/// embassy = ["chanapi/embassy"]
+/// ```
+///
+/// The embassy instantiation `macro_rules!` refers to `::chanapi::paste` and
+/// `::chanapi::static_cell` by absolute path. `chanapi` re-exports `paste`
+/// unconditionally and `static_cell` under its own `embassy` feature, so no
+/// additional consumer-side wiring is required beyond the feature forwards
+/// above.
 ///
 /// # Input constraints
 ///
@@ -48,9 +76,8 @@ use quote::quote;
 ///
 /// # Unstable API surface
 ///
-/// Additional items (transport aliases, embassy glue, `api_id` constant) are
-/// emitted by later subtasks in this workstream and are not produced by the
-/// current revision.
+/// The `api_id` constant (subtask 4) is not emitted by the current
+/// revision.
 #[proc_macro_attribute]
 pub fn service(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Subtask 1: `attr` is ignored. Subtask 4 will parse `api_id = ...`.
@@ -72,6 +99,8 @@ pub fn service(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let dispatch_sync = emit::dispatch_sync_fn(&svc);
             let serve = emit::serve_fn(&svc);
             let serve_sync = emit::serve_sync_fn(&svc);
+            let aliases = emit::transport_aliases(&svc);
+            let embassy_instantiation = emit::embassy_instantiation(&svc);
             quote! {
                 #req
                 #resp
@@ -83,6 +112,8 @@ pub fn service(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 #dispatch_sync
                 #serve
                 #serve_sync
+                #aliases
+                #embassy_instantiation
             }
             .into()
         }
@@ -699,6 +730,202 @@ mod tests {
         assert!(
             canon(emit::serve_sync_fn(&svc)).contains("pub (crate) fn foo_serve_sync"),
             "vis on serve_sync fn"
+        );
+    }
+
+    // =========================================================================
+    // Transport aliases (item 7).
+    // =========================================================================
+
+    #[test]
+    fn transport_aliases_shape() {
+        let svc = greeter();
+        let got = canon(emit::transport_aliases(&svc));
+        // tokio alias under `feature = "tokio"` cfg
+        assert!(got.contains("# [cfg (feature = \"tokio\")]"), "got: {got}");
+        assert!(
+            got.contains(
+                "pub type GreeterTokioService = \
+                 :: chanapi :: transport_tokio :: TokioService < GreeterRequest , GreeterResponse >"
+            ),
+            "got: {got}"
+        );
+        // embassy aliases under `feature = "embassy"` cfg
+        assert!(got.contains("# [cfg (feature = \"embassy\")]"), "got: {got}");
+        assert!(
+            got.contains(
+                "pub type GreeterEmbassyService < M , const CHANNEL_DEPTH : usize > = \
+                 :: chanapi :: transport_embassy :: EmbassyService < \
+                 M , GreeterRequest , GreeterResponse , CHANNEL_DEPTH >"
+            ),
+            "got: {got}"
+        );
+        assert!(
+            got.contains(
+                "pub type GreeterEmbassyClientTransport < 'a , M , const CHANNEL_DEPTH : usize > = \
+                 :: chanapi :: transport_embassy :: EmbassyClient < \
+                 'a , M , GreeterRequest , GreeterResponse , CHANNEL_DEPTH >"
+            ),
+            "got: {got}"
+        );
+    }
+
+    #[test]
+    fn transport_aliases_visibility_propagates() {
+        let item: syn::ItemTrait = syn::parse_quote! {
+            pub(crate) trait FooService {
+                fn a(&self) -> u32;
+            }
+        };
+        let svc = ServiceTrait::parse(item).unwrap();
+        let got = canon(emit::transport_aliases(&svc));
+        assert!(got.contains("pub (crate) type FooTokioService"), "got: {got}");
+        assert!(got.contains("pub (crate) type FooEmbassyService"), "got: {got}");
+        assert!(
+            got.contains("pub (crate) type FooEmbassyClientTransport"),
+            "got: {got}"
+        );
+    }
+
+    // =========================================================================
+    // Embassy instantiation `macro_rules!` (item 8).
+    //
+    // We assert via substring matching. The resulting token stream contains
+    // literal `$` metavars and nested `macro_rules!` declarations which only
+    // become meaningful once a downstream crate invokes them; compile-level
+    // verification lives in subtask 5's downstream test fixtures.
+    // =========================================================================
+
+    #[test]
+    fn embassy_instantiation_outer_macro_shape() {
+        let svc = greeter();
+        let got = canon(emit::embassy_instantiation(&svc));
+        assert!(got.contains("# [cfg (feature = \"embassy\")]"), "got: {got}");
+        assert!(got.contains("# [macro_export]"), "got: {got}");
+        assert!(
+            got.contains("macro_rules ! greeter_embassy_service"),
+            "got: {got}"
+        );
+        // Outer arm pattern.
+        assert!(
+            got.contains("($ name : ident , $ mutex : ty , $ depth : expr)"),
+            "got: {got}"
+        );
+        // `paste` is reached via ::chanapi::paste::paste!.
+        assert!(
+            got.contains(":: chanapi :: paste :: paste !"),
+            "expected absolute ::chanapi::paste::paste! path; got: {got}"
+        );
+    }
+
+    #[test]
+    fn embassy_instantiation_static_service_cell() {
+        let svc = greeter();
+        let got = canon(emit::embassy_instantiation(&svc));
+        // Static service ident prefix pasted with $name:upper.
+        assert!(
+            got.contains("[< __GREETER_SERVICE_ $ name : upper >]"),
+            "got: {got}"
+        );
+        // Full EmbassyService<…> type with stem-derived req/resp baked in.
+        assert!(
+            got.contains(
+                ":: chanapi :: transport_embassy :: EmbassyService < \
+                 $ mutex , GreeterRequest , GreeterResponse , $ depth , >"
+            ),
+            "got: {got}"
+        );
+        assert!(
+            got.contains(":: chanapi :: transport_embassy :: EmbassyService :: new ()"),
+            "got: {got}"
+        );
+    }
+
+    #[test]
+    fn embassy_instantiation_nested_client_macro() {
+        let svc = greeter();
+        let got = canon(emit::embassy_instantiation(&svc));
+        assert!(
+            got.contains("macro_rules ! [< $ name _client >]"),
+            "got: {got}"
+        );
+        // StaticCell via absolute ::chanapi::static_cell::StaticCell path.
+        assert!(
+            got.contains(":: chanapi :: static_cell :: StaticCell"),
+            "got: {got}"
+        );
+        // Baked-in client ident.
+        assert!(
+            got.contains(
+                "GreeterClient :: new (& * CELL . init \
+                 ([< __GREETER_SERVICE_ $ name : upper >] . client () ,) ,)"
+            ),
+            "got: {got}"
+        );
+    }
+
+    #[test]
+    fn embassy_instantiation_nested_server_macro() {
+        let svc = greeter();
+        let got = canon(emit::embassy_instantiation(&svc));
+        assert!(
+            got.contains("macro_rules ! [< $ name _server >]"),
+            "got: {got}"
+        );
+        assert!(
+            got.contains("[< __GREETER_SERVICE_ $ name : upper >] . server ()"),
+            "got: {got}"
+        );
+    }
+
+    #[test]
+    fn embassy_instantiation_nested_client_sync_macro() {
+        let svc = greeter();
+        let got = canon(emit::embassy_instantiation(&svc));
+        assert!(
+            got.contains("macro_rules ! [< $ name _client_sync >]"),
+            "got: {got}"
+        );
+        assert!(
+            got.contains("($ block_on : expr)"),
+            "got: {got}"
+        );
+        // Baked-in sync client + async client refs.
+        assert!(
+            got.contains("GreeterClientSync :: new ("),
+            "got: {got}"
+        );
+        assert!(
+            got.contains("GreeterClient :: new (& * CELL . init"),
+            "got: {got}"
+        );
+        assert!(got.contains("$ block_on ,"), "got: {got}");
+    }
+
+    #[test]
+    fn embassy_instantiation_snake_and_screaming_stem() {
+        let item: syn::ItemTrait = syn::parse_quote! {
+            pub trait FooBarService {
+                async fn a(&self) -> u32;
+            }
+        };
+        let svc = ServiceTrait::parse(item).unwrap();
+        let got = canon(emit::embassy_instantiation(&svc));
+        assert!(
+            got.contains("macro_rules ! foo_bar_embassy_service"),
+            "expected snake_case stem in outer macro ident; got: {got}"
+        );
+        assert!(
+            got.contains("[< __FOO_BAR_SERVICE_ $ name : upper >]"),
+            "expected SCREAMING_SNAKE stem in static prefix; got: {got}"
+        );
+        assert!(
+            got.contains("FooBarClient :: new"),
+            "expected PascalCase stem in nested client body; got: {got}"
+        );
+        assert!(
+            got.contains("FooBarClientSync :: new"),
+            "got: {got}"
         );
     }
 }

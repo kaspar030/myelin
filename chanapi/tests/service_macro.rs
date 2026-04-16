@@ -232,3 +232,35 @@ fn serve_signatures_compile() {
         let _: Result<(), Infallible> = greeter_serve_sync(&svc, &mut t, &TokioBlockOn);
     };
 }
+
+// =============================================================================
+// Transport convenience type aliases (item 7).
+//
+// Under `feature = "tokio"` the generated `GreeterTokioService` must be a
+// valid alias usable to construct an in-process transport.
+// =============================================================================
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn tokio_service_alias_is_usable() {
+    // Emitted by the macro.
+    let mut svc: GreeterTokioService = GreeterTokioService::new(4);
+    let client = svc.client();
+    let mut server = svc.server();
+
+    // Drive one round-trip to prove the alias is wired to the real
+    // TokioService<Req, Resp> type.
+    let svc_impl = MyAsync;
+    let client_task = tokio::spawn(async move {
+        let c = GreeterClient::new(client);
+        c.health().await
+    });
+
+    // Server side — dispatch exactly one request then return.
+    let (req, token) = server.recv().await.unwrap();
+    let resp = greeter_dispatch(&svc_impl, req).await;
+    server.reply(token, resp).await.unwrap();
+
+    let b: bool = client_task.await.unwrap().unwrap();
+    assert!(b);
+}

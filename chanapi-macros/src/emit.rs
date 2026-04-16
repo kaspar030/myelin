@@ -129,6 +129,34 @@ fn serve_sync_fn_ident(stem: &Ident) -> Ident {
     Ident::new(&format!("{snake}_serve_sync"), stem.span())
 }
 
+fn tokio_service_ident(stem: &Ident) -> Ident {
+    Ident::new(&format!("{stem}TokioService"), stem.span())
+}
+
+fn embassy_service_ident(stem: &Ident) -> Ident {
+    Ident::new(&format!("{stem}EmbassyService"), stem.span())
+}
+
+fn embassy_client_transport_ident(stem: &Ident) -> Ident {
+    Ident::new(&format!("{stem}EmbassyClientTransport"), stem.span())
+}
+
+fn embassy_macro_ident(stem: &Ident) -> Ident {
+    let snake = stem_snake(stem);
+    Ident::new(&format!("{snake}_embassy_service"), stem.span())
+}
+
+fn stem_upper(stem: &Ident) -> Ident {
+    let upper = stem.to_string().to_case(Case::UpperSnake);
+    Ident::new(&upper, stem.span())
+}
+
+fn embassy_static_prefix_ident(stem: &Ident) -> Ident {
+    // Prefix used inside the paste!-concatenated static ident:
+    // `[< __{STEM_UPPER}_SERVICE_ $name:upper >]`.
+    Ident::new(&format!("__{}_SERVICE_", stem_upper(stem)), stem.span())
+}
+
 /// Return-type token stream usable as a `TransportResult<_>` type parameter.
 /// Maps `ReturnKind::Unit` to `()`.
 fn ret_ty_tokens(ret: &ReturnKind) -> TokenStream {
@@ -407,6 +435,200 @@ pub fn serve_sync_fn(svc: &ServiceTrait) -> TokenStream {
                 let resp = #dispatch_sync(svc, req);
                 let _ = block_on.block_on(transport.reply(token, resp));
             }
+        }
+    }
+}
+
+// =============================================================================
+// Transport convenience aliases (item 7)
+// =============================================================================
+
+/// Emit per-transport type aliases:
+///
+/// ```ignore
+/// #[cfg(feature = "tokio")]
+/// pub type {Stem}TokioService =
+///     ::chanapi::transport_tokio::TokioService<{Stem}Request, {Stem}Response>;
+///
+/// #[cfg(feature = "embassy")]
+/// pub type {Stem}EmbassyService<M, const CHANNEL_DEPTH: usize> =
+///     ::chanapi::transport_embassy::EmbassyService<
+///         M, {Stem}Request, {Stem}Response, CHANNEL_DEPTH,
+///     >;
+///
+/// #[cfg(feature = "embassy")]
+/// pub type {Stem}EmbassyClientTransport<'a, M, const CHANNEL_DEPTH: usize> =
+///     ::chanapi::transport_embassy::EmbassyClient<
+///         'a, M, {Stem}Request, {Stem}Response, CHANNEL_DEPTH,
+///     >;
+/// ```
+///
+/// The `#[cfg(feature = "...")]` attributes refer to features of the
+/// *consuming* crate, not of `chanapi-macros`. The consumer is expected to
+/// forward those features to `chanapi`'s matching features (typically via
+/// `tokio = ["chanapi/tokio"]` / `embassy = ["chanapi/embassy"]`).
+pub fn transport_aliases(svc: &ServiceTrait) -> TokenStream {
+    let vis = &svc.vis;
+    let req = request_enum_ident(&svc.stem);
+    let resp = response_enum_ident(&svc.stem);
+
+    let tokio_alias = tokio_service_ident(&svc.stem);
+    let embassy_svc = embassy_service_ident(&svc.stem);
+    let embassy_cli = embassy_client_transport_ident(&svc.stem);
+
+    quote! {
+        #[cfg(feature = "tokio")]
+        #vis type #tokio_alias =
+            ::chanapi::transport_tokio::TokioService<#req, #resp>;
+
+        #[cfg(feature = "embassy")]
+        #vis type #embassy_svc<M, const CHANNEL_DEPTH: usize> =
+            ::chanapi::transport_embassy::EmbassyService<M, #req, #resp, CHANNEL_DEPTH>;
+
+        #[cfg(feature = "embassy")]
+        #vis type #embassy_cli<'a, M, const CHANNEL_DEPTH: usize> =
+            ::chanapi::transport_embassy::EmbassyClient<'a, M, #req, #resp, CHANNEL_DEPTH>;
+    }
+}
+
+// =============================================================================
+// Embassy instantiation `macro_rules!` (item 8)
+// =============================================================================
+
+/// Emit a `#[macro_export] macro_rules! {stem_snake}_embassy_service` under
+/// `#[cfg(feature = "embassy")]`.
+///
+/// Matches `testing-service`'s hand-written version in shape, but with
+/// stem-derived idents (`{Stem}Client`, `{Stem}ClientSync`, `{Stem}Request`,
+/// `{Stem}Response`) baked in at proc-macro expansion time, so the nested
+/// `*_client!` / `*_server!` / `*_client_sync!` macros resolve regardless of
+/// invocation scope (as long as the trait's module is accessible).
+///
+/// Generated shape:
+///
+/// ```ignore
+/// #[cfg(feature = "embassy")]
+/// #[macro_export]
+/// macro_rules! {stem_snake}_embassy_service {
+///     ($name:ident, $mutex:ty, $depth:expr) => {
+///         ::chanapi::paste::paste! {
+///             static [<__{STEM_UPPER}_SERVICE_ $name:upper>]:
+///                 ::chanapi::transport_embassy::EmbassyService<
+///                     $mutex, {Stem}Request, {Stem}Response, $depth,
+///                 > = ::chanapi::transport_embassy::EmbassyService::new();
+///
+///             macro_rules! [<$name _client>] { () => {{
+///                 static CELL: ::chanapi::static_cell::StaticCell<
+///                     ::chanapi::transport_embassy::EmbassyClient<
+///                         'static, $mutex, {Stem}Request, {Stem}Response, $depth,
+///                     >,
+///                 > = ::chanapi::static_cell::StaticCell::new();
+///                 {Stem}Client::new(&*CELL.init([<__{STEM_UPPER}_SERVICE_ $name:upper>].client()))
+///             }}; }
+///
+///             macro_rules! [<$name _server>] { () => {
+///                 [<__{STEM_UPPER}_SERVICE_ $name:upper>].server()
+///             }; }
+///
+///             macro_rules! [<$name _client_sync>] { ($block_on:expr) => {{
+///                 static CELL: ::chanapi::static_cell::StaticCell<
+///                     ::chanapi::transport_embassy::EmbassyClient<
+///                         'static, $mutex, {Stem}Request, {Stem}Response, $depth,
+///                     >,
+///                 > = ::chanapi::static_cell::StaticCell::new();
+///                 {Stem}ClientSync::new(
+///                     {Stem}Client::new(&*CELL.init([<__{STEM_UPPER}_SERVICE_ $name:upper>].client())),
+///                     $block_on,
+///                 )
+///             }}; }
+///         }
+///     };
+/// }
+/// ```
+///
+/// # Path convention
+///
+/// The emitted macro uses absolute `::chanapi::...` paths (including for
+/// `paste` and `static_cell`) so it works uniformly from any consumer crate
+/// without requiring the consumer to re-export supporting crates. `chanapi`
+/// itself re-exports `paste` (always) and `static_cell` (under `embassy`).
+///
+/// # `$` / `#` collision
+///
+/// `quote!` uses `#var` for interpolation and leaves `$` untouched, so
+/// literal `$name` / `$mutex` / `$depth` / `$block_on` in the body pass
+/// through verbatim to the emitted `macro_rules!`.
+pub fn embassy_instantiation(svc: &ServiceTrait) -> TokenStream {
+    let stem = &svc.stem;
+    let macro_ident = embassy_macro_ident(stem);
+    let req = request_enum_ident(stem);
+    let resp = response_enum_ident(stem);
+    let client = client_ident(stem);
+    let client_sync = client_sync_ident(stem);
+    let static_prefix = embassy_static_prefix_ident(stem);
+
+    quote! {
+        #[cfg(feature = "embassy")]
+        #[macro_export]
+        macro_rules! #macro_ident {
+            ($name:ident, $mutex:ty, $depth:expr) => {
+                ::chanapi::paste::paste! {
+                    static [< #static_prefix $name:upper >]:
+                        ::chanapi::transport_embassy::EmbassyService<
+                            $mutex,
+                            #req,
+                            #resp,
+                            $depth,
+                        > = ::chanapi::transport_embassy::EmbassyService::new();
+
+                    macro_rules! [< $name _client >] {
+                        () => {{
+                            static CELL: ::chanapi::static_cell::StaticCell<
+                                ::chanapi::transport_embassy::EmbassyClient<
+                                    'static,
+                                    $mutex,
+                                    #req,
+                                    #resp,
+                                    $depth,
+                                >,
+                            > = ::chanapi::static_cell::StaticCell::new();
+                            #client::new(
+                                &*CELL.init(
+                                    [< #static_prefix $name:upper >].client(),
+                                ),
+                            )
+                        }};
+                    }
+
+                    macro_rules! [< $name _server >] {
+                        () => {
+                            [< #static_prefix $name:upper >].server()
+                        };
+                    }
+
+                    macro_rules! [< $name _client_sync >] {
+                        ($block_on:expr) => {{
+                            static CELL: ::chanapi::static_cell::StaticCell<
+                                ::chanapi::transport_embassy::EmbassyClient<
+                                    'static,
+                                    $mutex,
+                                    #req,
+                                    #resp,
+                                    $depth,
+                                >,
+                            > = ::chanapi::static_cell::StaticCell::new();
+                            #client_sync::new(
+                                #client::new(
+                                    &*CELL.init(
+                                        [< #static_prefix $name:upper >].client(),
+                                    ),
+                                ),
+                                $block_on,
+                            )
+                        }};
+                    }
+                }
+            };
         }
     }
 }

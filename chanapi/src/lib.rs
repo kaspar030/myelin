@@ -85,9 +85,28 @@ pub use transport::{ClientTransport, ServerTransport};
 /// contract and emitted items.
 pub use chanapi_macros::service;
 
-// Re-export paste for use by compose_service! macro.
+// Re-export paste for use by compose_service! and #[chanapi::service] macros.
+//
+// These two lines re-export, under the name `paste`:
+//   - the `paste!` *macro* (in the macro namespace), so that existing
+//     `$crate::paste!` invocations in `compose_service!` continue to work.
+//   - the `paste` *crate* (in the type/module namespace), so that code emitted
+//     by `#[chanapi::service]` can reference `::chanapi::paste::paste!`.
+// Macros and items live in separate namespaces, so the two `paste` names
+// coexist without conflict.
 #[doc(hidden)]
-pub use paste::paste;
+pub use ::paste as paste;
+#[doc(hidden)]
+pub use ::paste::paste;
+
+// Re-export static_cell under the `embassy` feature so that code emitted by
+// `#[chanapi::service]` can refer to `::chanapi::static_cell::StaticCell`
+// without the consumer having to depend on (or re-export) `static_cell`
+// themselves. The absolute path is part of the emitted `macro_rules!` body
+// and matches the "no crate-override" policy of v1.
+#[cfg(feature = "embassy")]
+#[doc(hidden)]
+pub use static_cell;
 
 /// Compose multiple service APIs into a single multiplexed service.
 ///

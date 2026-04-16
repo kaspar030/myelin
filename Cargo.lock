@@ -51,6 +51,7 @@ dependencies = [
  "paste",
  "postcard",
  "serde",
+ "static_cell",
  "tokio",
 ]
 
