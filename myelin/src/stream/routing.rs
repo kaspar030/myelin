@@ -10,6 +10,8 @@
 //!   slot ID. Slot allocation uses an atomic bitmap (no allocator needed).
 
 use core::future::Future;
+use core::mem::MaybeUninit;
+use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, Ordering};
 use core::task::Poll;
 
@@ -155,6 +157,45 @@ impl<const BUF: usize> SlotCell<BUF> {
             generation: AtomicU8::new(0),
         }
     }
+
+    /// Initialise a `SlotCell` in place at `ptr` without ever materialising
+    /// a whole `SlotCell<BUF>` on the stack.
+    ///
+    /// The naïve `ptr.write(SlotCell::new())` would still build the fresh
+    /// cell (including its `[u8; BUF]` data buffer) in a local first, which
+    /// is exactly the stack-overflow hazard we are trying to avoid for large
+    /// `BUF`. This helper zeros the allocation byte-by-byte and then overlays
+    /// a fresh `AtomicWaker` — a small, `BUF`-independent local.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a properly-aligned, writable region of size
+    /// `size_of::<SlotCell<BUF>>()` that the caller treats as uninitialised.
+    /// After this call the region contains a fully-initialised `SlotCell<BUF>`
+    /// and ownership of that value transfers to the caller.
+    unsafe fn init_in_place(ptr: *mut SlotCell<BUF>) {
+        // Zero the whole region. This is a valid initialiser for:
+        //   - `data: UnsafeCell<[u8; BUF]>` — zeroed byte array is fine,
+        //   - `len: AtomicU16` — `AtomicU16::new(0)` is all-zeros,
+        //   - `generation: AtomicU8` — `AtomicU8::new(0)` is all-zeros.
+        // The `waker: AtomicWaker` field is also zeroed, but `AtomicWaker`'s
+        // internal `Option<Waker>` niche layout is not guaranteed to match
+        // an all-zero `None`, so we overwrite it explicitly below.
+        //
+        // SAFETY: the caller guarantees `ptr` is properly aligned and points
+        // to a writable region of `size_of::<SlotCell<BUF>>()` bytes.
+        unsafe {
+            core::ptr::write_bytes(ptr as *mut u8, 0, core::mem::size_of::<SlotCell<BUF>>());
+        }
+        // Overwrite the waker field with a properly-constructed
+        // `AtomicWaker`. This is a small, fixed-size local that does not
+        // scale with `BUF`, so the stack cost is trivial.
+        //
+        // SAFETY: same as above — `ptr` is valid for writes to `(*ptr).waker`.
+        unsafe {
+            addr_of_mut!((*ptr).waker).write(AtomicWaker::new());
+        }
+    }
 }
 
 /// Multiplexed reply router supporting `N` concurrent in-flight requests.
@@ -217,6 +258,14 @@ impl<const N: usize, const BUF: usize> MuxedSlots<N, BUF> {
     const _ASSERT_N_LE_32: () = assert!(N <= 32, "MuxedSlots: N must be <= 32");
 
     /// Create a new muxed router with all slots free.
+    ///
+    /// This constructor builds the slot array on the stack before the
+    /// result is moved into its final location. For small configurations
+    /// that is fine, but the stack frame grows as `N * BUF`. If
+    /// `N * BUF` is more than a few hundred kilobytes (e.g. `N = 32`,
+    /// `BUF = 65_536` → 2 MiB), prefer [`new_boxed`](Self::new_boxed) —
+    /// it writes each slot directly into a heap allocation and keeps
+    /// stack use bounded.
     pub fn new() -> Self {
         // Trigger the compile-time assertion.
         let () = Self::_ASSERT_N_LE_32;
@@ -225,6 +274,46 @@ impl<const N: usize, const BUF: usize> MuxedSlots<N, BUF> {
             bitmap: AtomicU32::new(0),
             slots: core::array::from_fn(|_| SlotCell::new()),
             alloc_waker: AtomicWaker::new(),
+        }
+    }
+
+    /// Heap-allocate and construct a `MuxedSlots<N, BUF>` directly in its
+    /// final `Box`, without placing the `N × BUF` slot array on the stack.
+    ///
+    /// Prefer this over [`new`](Self::new) when `N * BUF` is large enough
+    /// to risk a stack overflow during construction — typical runtime
+    /// worker-thread stacks are only a couple of megabytes, and
+    /// `MuxedSlots<32, 65_536>` alone is 2 MiB.
+    ///
+    /// The resulting `Box<MuxedSlots<N, BUF>>` has the same observable
+    /// state as `Box::new(MuxedSlots::new())`; the only difference is
+    /// that no intermediate is built on the stack.
+    pub fn new_boxed() -> Box<Self> {
+        // Trigger the compile-time assertion.
+        let () = Self::_ASSERT_N_LE_32;
+
+        let mut uninit: Box<MaybeUninit<Self>> = Box::new_uninit();
+        let ptr: *mut Self = uninit.as_mut_ptr();
+        // SAFETY: `uninit` owns a properly-aligned, writable allocation
+        // large enough to hold a `MuxedSlots<N, BUF>`. We initialise each
+        // field exactly once via `addr_of_mut!(...).write(...)` and then
+        // hand the allocation to `Box::from_raw` as a fully-initialised
+        // `Self`. None of the writes below can panic, so we do not need
+        // a panic guard to avoid leaking partially-initialised fields.
+        unsafe {
+            addr_of_mut!((*ptr).bitmap).write(AtomicU32::new(0));
+            addr_of_mut!((*ptr).alloc_waker).write(AtomicWaker::new());
+
+            let slots_ptr: *mut SlotCell<BUF> =
+                addr_of_mut!((*ptr).slots) as *mut SlotCell<BUF>;
+            for i in 0..N {
+                // `init_in_place` writes directly into the heap slot,
+                // avoiding any `BUF`-scaled stack intermediate.
+                SlotCell::<BUF>::init_in_place(slots_ptr.add(i));
+            }
+
+            let raw = Box::into_raw(uninit) as *mut Self;
+            Box::from_raw(raw)
         }
     }
 
@@ -734,5 +823,69 @@ mod tests {
         ids.sort();
         let expected: Vec<u8> = (0..32).collect();
         assert_eq!(ids, expected);
+    }
+
+    // -- new_boxed --
+
+    #[test]
+    fn new_boxed_produces_equivalent_state() {
+        // Heap-construct and verify the resulting router is functionally
+        // identical to one built via `new()`.
+        let router: Box<MuxedSlots<4, 64>> = MuxedSlots::<4, 64>::new_boxed();
+
+        // Bitmap starts empty.
+        assert_eq!(router.bitmap.load(Ordering::Relaxed), 0);
+
+        // All slots initially zeroed.
+        for i in 0..4 {
+            assert_eq!(router.slots[i].len.load(Ordering::Relaxed), 0);
+            assert_eq!(router.slots[i].generation.load(Ordering::Relaxed), 0);
+        }
+
+        // Allocate all four, get distinct ids, then free by dropping.
+        let s0 = router.try_acquire().expect("slot 0");
+        let s1 = router.try_acquire().expect("slot 1");
+        let s2 = router.try_acquire().expect("slot 2");
+        let s3 = router.try_acquire().expect("slot 3");
+        assert!(router.try_acquire().is_none());
+
+        let mut ids = [s0.slot_id(), s1.slot_id(), s2.slot_id(), s3.slot_id()];
+        ids.sort();
+        assert_eq!(ids, [0, 1, 2, 3]);
+
+        // Deliver + recv round-trip on one slot to exercise the data buffer.
+        router.deliver(s1.slot_id(), b"hello");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let reply = rt.block_on(s1.recv_reply());
+        assert_eq!(reply, b"hello");
+
+        drop(s0);
+        drop(s1);
+        drop(s2);
+        drop(s3);
+        assert_eq!(router.bitmap.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn new_boxed_on_restricted_stack() {
+        // 32 × 128 KiB = 4 MiB of slot data — vastly more than a 1 MiB
+        // worker stack. This *must* succeed via `new_boxed` (building the
+        // same router with `new()` on this thread would overflow).
+        std::thread::Builder::new()
+            .stack_size(1 << 20) // 1 MiB
+            .spawn(|| {
+                let router: Box<MuxedSlots<32, 131_072>> =
+                    MuxedSlots::<32, 131_072>::new_boxed();
+                // Touch the router to make sure the optimiser does not
+                // elide the allocation.
+                assert_eq!(router.bitmap.load(Ordering::Relaxed), 0);
+                let slot = router.try_acquire().expect("slot on big router");
+                assert!(slot.slot_id() < 32);
+            })
+            .expect("spawn restricted-stack thread")
+            .join()
+            .expect("restricted-stack thread panicked (likely stack overflow)");
     }
 }

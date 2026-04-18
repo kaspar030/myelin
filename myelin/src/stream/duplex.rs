@@ -200,7 +200,12 @@ pub struct DuplexShared<W, Framer, Codec, const N: usize, const BUF: usize> {
     writer: LocalLock<W>,
     /// Outgoing-call slot router — our side's pending responses are
     /// delivered here by the pump.
-    slots: MuxedSlots<N, BUF>,
+    ///
+    /// Stored in a [`Box`] so that constructing a `DuplexStreamTransport`
+    /// does not have to materialise the full `N × BUF` slot array on the
+    /// stack before moving it into this struct. See
+    /// [`MuxedSlots::new_boxed`] for the underlying reason.
+    slots: Box<MuxedSlots<N, BUF>>,
     /// Registered server inboxes, keyed by `api_id`.
     inboxes: std::sync::Mutex<HashMap<u16, ServerInbox>>,
     framer: Framer,
@@ -265,7 +270,7 @@ impl<R, W, Framer, Codec, const N: usize, const BUF: usize>
             reader,
             shared: Arc::new(DuplexShared {
                 writer: LocalLock::new(writer),
-                slots: MuxedSlots::new(),
+                slots: MuxedSlots::new_boxed(),
                 inboxes: std::sync::Mutex::new(HashMap::new()),
                 framer,
                 codec,
@@ -699,5 +704,30 @@ mod tests {
             })
             .await;
         });
+    }
+
+    #[test]
+    fn duplex_construction_on_restricted_stack() {
+        // Mirror of `routing::tests::new_boxed_on_restricted_stack` at the
+        // full `DuplexStreamTransport` layer. With `N = 32`, `BUF =
+        // 131_072` the slot array alone is 4 MiB — impossible to build
+        // on a 1 MiB thread stack unless `MuxedSlots` is heap-constructed
+        // *and* the `DuplexShared::slots` field is boxed (so the slot
+        // array is not re-materialised on the stack during
+        // `DuplexShared` construction).
+        type BigDx<R, W> =
+            DuplexStreamTransport<R, W, LengthPrefixed, PostcardCodec, 32, 131_072>;
+
+        std::thread::Builder::new()
+            .stack_size(1 << 20) // 1 MiB
+            .spawn(|| {
+                let ((r_a, w_a), (_r_b, _w_b)) = duplex();
+                let _dx: BigDx<_, _> = BigDx::new(r_a, w_a);
+                // If we got here, construction stayed within the 1 MiB
+                // stack budget — that is the whole point of the test.
+            })
+            .expect("spawn restricted-stack thread")
+            .join()
+            .expect("DuplexStreamTransport construction overflowed a 1 MiB stack");
     }
 }

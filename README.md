@@ -41,6 +41,22 @@ This generates `GreeterClient`, `GreeterRequest`/`GreeterResponse` enums,
 | Smol (async-channel) | `smol` | In-process, smol async |
 | Postcard stream | `postcard` | Cross-process, serialized (stdio/TCP/UART) |
 
+## Unreleased
+
+- `stream::routing`: add `MuxedSlots::new_boxed() -> Box<Self>`, which
+  constructs the `N × BUF` slot array directly in a heap allocation.
+  The existing `MuxedSlots::new()` builds the slot array on the stack
+  first, so it overflows typical runtime worker stacks (e.g. tokio's
+  2 MiB default) for large `N * BUF` configurations. `new_boxed` keeps
+  stack use bounded regardless of `BUF`.
+- `stream::duplex::DuplexShared::slots` is now `Box<MuxedSlots<N, BUF>>`,
+  and `DuplexStreamTransport::with_layers` uses `MuxedSlots::new_boxed()`.
+  This lets `DuplexStreamTransport<_, _, _, _, 32, 131_072>` construct
+  on a 1 MiB stack — see the new
+  `duplex_construction_on_restricted_stack` regression test.
+  Hot paths (`acquire`, `deliver`, `recv_reply`, `try_recv_slot`) are
+  unchanged — access goes through `Box`'s auto-deref.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
