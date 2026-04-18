@@ -2,6 +2,12 @@
 name = "myelin"
 version = "0.1.0"
 edition = "2024"
+description = "Define async service APIs as traits, communicate over channels. Transport and serialization are pluggable."
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/kaspar030/myelin"
+keywords = ["async", "rpc", "channels", "embassy", "no_std"]
+categories = ["asynchronous", "embedded", "network-programming"]
+readme = "../README.md"
 
 [features]
 default = []

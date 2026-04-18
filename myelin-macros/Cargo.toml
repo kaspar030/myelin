@@ -2,6 +2,12 @@
 name = "myelin-macros"
 version = "0.1.0"
 edition = "2024"
+description = "Proc macros for myelin — generates service plumbing from trait definitions"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/kaspar030/myelin"
+keywords = ["async", "rpc", "proc-macro"]
+categories = ["asynchronous"]
+readme = "../README.md"
 
 [lib]
 proc-macro = true
