@@ -180,45 +180,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
-name = "chanapi"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "atomic-waker",
- "chanapi-macros",
- "embassy-sync",
- "futures-io",
- "futures-lite",
- "paste",
- "postcard",
- "serde",
- "smol",
- "static_cell",
- "tokio",
-]
-
-[[package]]
-name = "chanapi-macros"
-version = "0.1.0"
-dependencies = [
- "chanapi",
- "convert_case",
- "proc-macro2",
- "quote",
- "syn",
- "trybuild",
-]
-
-[[package]]
-name = "chanapi-testing"
-version = "0.1.0"
-dependencies = [
- "chanapi",
- "testing-service",
- "tokio",
-]
-
-[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -478,6 +439,45 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys",
+]
+
+[[package]]
+name = "myelin"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "atomic-waker",
+ "embassy-sync",
+ "futures-io",
+ "futures-lite",
+ "myelin-macros",
+ "paste",
+ "postcard",
+ "serde",
+ "smol",
+ "static_cell",
+ "tokio",
+]
+
+[[package]]
+name = "myelin-macros"
+version = "0.1.0"
+dependencies = [
+ "convert_case",
+ "myelin",
+ "proc-macro2",
+ "quote",
+ "syn",
+ "trybuild",
+]
+
+[[package]]
+name = "myelin-testing"
+version = "0.1.0"
+dependencies = [
+ "myelin",
+ "testing-service",
+ "tokio",
 ]
 
 [[package]]
@@ -781,7 +781,7 @@ dependencies = [
 name = "testing-service"
 version = "0.1.0"
 dependencies = [
- "chanapi",
+ "myelin",
  "serde",
 ]
 
@@ -789,7 +789,7 @@ dependencies = [
 name = "testing-stdio"
 version = "0.1.0"
 dependencies = [
- "chanapi",
+ "myelin",
  "testing-service",
 ]
 

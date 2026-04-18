@@ -1,5 +1,0 @@
-error: chanapi::service: argument must be a plain `ident: Type` (no destructuring, `_`, `ref`, or `mut`)
- --> tests/ui/fail_destructure_arg.rs:3:19
-  |
-3 |     fn add(&self, (a, b): (i32, i32)) -> i64;
-  |                   ^^^^^^

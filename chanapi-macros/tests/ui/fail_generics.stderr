@@ -1,5 +1,0 @@
-error: chanapi::service: trait generics are not supported in v1
- --> tests/ui/fail_generics.rs:2:21
-  |
-2 | pub trait FooService<T> {
-  |                     ^

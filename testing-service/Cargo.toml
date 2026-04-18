@@ -5,10 +5,10 @@ edition = "2024"
 
 [features]
 default = []
-embassy = ["chanapi/embassy"]
+embassy = ["myelin/embassy"]
 serde = ["dep:serde"]
-tokio = ["chanapi/tokio"]
+tokio = ["myelin/tokio"]
 
 [dependencies]
-chanapi = { path = "../chanapi" }
+myelin = { path = "../myelin" }
 serde = { version = "1", features = ["derive"], optional = true }

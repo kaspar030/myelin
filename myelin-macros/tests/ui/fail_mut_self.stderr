@@ -1,0 +1,5 @@
+error: myelin::service: receiver must be `&self` (not `&mut self`)
+ --> tests/ui/fail_mut_self.rs:3:18
+  |
+3 |     async fn bar(&mut self);
+  |                  ^

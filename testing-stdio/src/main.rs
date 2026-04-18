@@ -48,7 +48,7 @@ impl MathServiceSync for CombinedImpl {
 /// Trivial BlockOn for a synchronous transport — the futures are always ready.
 struct SyncBlockOn;
 
-impl chanapi::BlockOn for SyncBlockOn {
+impl myelin::BlockOn for SyncBlockOn {
     fn block_on<F: core::future::Future>(&self, fut: F) -> F::Output {
         let mut fut = core::pin::pin!(fut);
         let waker = noop_waker();
@@ -71,7 +71,7 @@ fn run_greeter_server() {
     eprintln!("[server] starting greeter on stdio");
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
-    let mut transport = chanapi::transport_postcard::new_postcard_stream::<_, _, GreeterRequest, GreeterResponse>(stdin, stdout);
+    let mut transport = myelin::transport_postcard::new_postcard_stream::<_, _, GreeterRequest, GreeterResponse>(stdin, stdout);
     let svc = GreeterImpl;
     let _ = greeter_serve_sync(&svc, &mut transport, &SyncBlockOn);
     eprintln!("[server] greeter done");
@@ -81,7 +81,7 @@ fn run_combined_server() {
     eprintln!("[server] starting combined on stdio");
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
-    let mut transport = chanapi::transport_postcard::new_postcard_stream::<_, _, CombinedRequest, CombinedResponse>(stdin, stdout);
+    let mut transport = myelin::transport_postcard::new_postcard_stream::<_, _, CombinedRequest, CombinedResponse>(stdin, stdout);
     let svc = CombinedImpl;
     let _ = combined_serve_sync(&svc, &mut transport, &SyncBlockOn);
     eprintln!("[server] combined done");
@@ -105,7 +105,7 @@ fn run_greeter_client() {
     let child_stdout = child.stdout.take().unwrap();
 
     let transport =
-        chanapi::transport_postcard::new_postcard_stream::<_, _, GreeterResponse, GreeterRequest>(child_stdout, child_stdin);
+        myelin::transport_postcard::new_postcard_stream::<_, _, GreeterResponse, GreeterRequest>(child_stdout, child_stdin);
     let client = testing_service::GreeterClientSync::new(
         testing_service::GreeterClient::new(transport),
         SyncBlockOn,
@@ -140,7 +140,7 @@ fn run_combined_client() {
     let child_stdout = child.stdout.take().unwrap();
 
     let transport =
-        chanapi::transport_postcard::new_postcard_stream::<_, _, CombinedResponse, CombinedRequest>(child_stdout, child_stdin);
+        myelin::transport_postcard::new_postcard_stream::<_, _, CombinedResponse, CombinedRequest>(child_stdout, child_stdin);
     let client = testing_service::CombinedClientSync::new(
         testing_service::CombinedClient::new(transport),
         SyncBlockOn,

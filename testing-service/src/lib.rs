@@ -3,7 +3,7 @@
 
 //! Greeter and Math service definitions.
 //!
-//! The traits are the single source of truth — [`#[chanapi::service]`](chanapi::service)
+//! The traits are the single source of truth — [`#[myelin::service]`](myelin::service)
 //! generates the channel plumbing (request/response enums, clients, dispatch,
 //! serve loops, transport aliases, embassy instantiation macros, and the
 //! wire-level `*_API_ID` constants).
@@ -14,19 +14,19 @@
 extern crate alloc;
 use alloc::string::String;
 
-#[chanapi::service(api_id = 0x0001)]
+#[myelin::service(api_id = 0x0001)]
 pub trait GreeterService {
     async fn greet(&self, name: String) -> String;
     fn health(&self) -> bool; // sync — exercises mixed-mode dispatch codegen
 }
 
-#[chanapi::service(api_id = 0x0002)]
+#[myelin::service(api_id = 0x0002)]
 pub trait MathService {
     async fn add(&self, a: i32, b: i32) -> i64;
     async fn multiply(&self, a: i32, b: i32) -> i64;
 }
 
-chanapi::compose_service!(
+myelin::compose_service!(
     Combined,
     [Greeter, greeter_dispatch, greeter_dispatch_sync],
     [Math, math_dispatch, math_dispatch_sync],

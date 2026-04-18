@@ -1,0 +1,17 @@
+[package]
+name = "myelin-macros"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+convert_case = "0.6"
+
+[dev-dependencies]
+trybuild = "1"
+myelin = { path = "../myelin" }

@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chanapi = { path = "../chanapi", features = ["postcard"] }
+myelin = { path = "../myelin", features = ["postcard"] }
 testing-service = { path = "../testing-service", features = ["serde"] }

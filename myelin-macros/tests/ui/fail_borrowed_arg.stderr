@@ -1,0 +1,5 @@
+error: myelin::service: argument types must be owned (use `String`/`Vec<T>`/... instead of `&str`/`&[T]`)
+ --> tests/ui/fail_borrowed_arg.rs:3:25
+  |
+3 |     fn bar(&self, name: &str);
+  |                         ^

@@ -1,0 +1,5 @@
+error: myelin::service: supertraits are not supported
+ --> tests/ui/fail_supertrait.rs:2:23
+  |
+2 | pub trait FooService: Send {
+  |                       ^^^^

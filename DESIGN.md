@@ -1,4 +1,4 @@
-# chanapi — Design Notes
+# myelin — Design Notes
 
 ## Transport Layering
 
@@ -17,7 +17,7 @@ Local transports (embassy, tokio) stay monolithic — they don't need framing or
 Multiple API traits on a single server, single channel:
 
 ```rust
-chanapi::compose_service!(
+myelin::compose_service!(
     MyService,
     GreeterService,
     HealthService,
@@ -56,9 +56,9 @@ Atomic bitmap for slot allocation, same pattern as original embassy transport. M
 
 ## Async I/O
 
-The stream stack is genuinely async. chanapi owns two minimal traits,
+The stream stack is genuinely async. myelin owns two minimal traits,
 `io::AsyncBytesRead` and `io::AsyncBytesWrite`, with just `read_exact`,
-`write_all`, and `flush`. Core chanapi depends on neither `tokio` nor
+`write_all`, and `flush`. Core myelin depends on neither `tokio` nor
 `futures` — runtime adapters live behind feature flags:
 
 - `BlockingIo` wraps `std::io::Read`/`Write` (no-`await` inline ops).
@@ -99,4 +99,4 @@ is; duplex is chosen explicitly at the call site.
 - Server may do wasted work if client cancelled after send
 - Server cancellation: clients get error (tokio/postcard) or hang (embassy)
 
-See crate-level docs in `chanapi/src/lib.rs` for full details.
+See crate-level docs in `myelin/src/lib.rs` for full details.
