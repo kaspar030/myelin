@@ -1,43 +1,48 @@
 //! Composed stream transport built from Framing × Encoding × ReplyRouting.
 //!
 //! `StreamTransport` implements [`ClientTransport`] and [`ServerTransport`]
-//! by composing a framer, a codec, and a reply router over a read/write
-//! byte stream.
+//! by composing a framer, a codec, and a reply router over an async
+//! byte stream (a reader and a writer).
 //!
-//! For [`Sequential`](super::routing::Sequential) routing, this is a simple
-//! send-then-receive loop. For [`MuxedSlots`](super::routing::MuxedSlots)
-//! routing, the transport manages concurrent requests via cooperative
-//! demuxing: each `call()` reads from the stream and dispatches replies to
-//! the correct slot.
-
-use std::cell::RefCell;
-use std::io::{Read, Write};
+//! Single-owner-at-a-time access to the reader and writer is mediated by
+//! [`LocalLock`] — this replaces the old `RefCell`-based shared access
+//! (which was unsound for real async I/O since `RefMut` can't be held
+//! across `.await`). `LocalLock` is cancel-safe and zero-dep.
+//!
+//! For [`Sequential`](super::routing::Sequential) routing, this is a
+//! simple send-then-receive loop. For
+//! [`MuxedSlots`](super::routing::MuxedSlots) routing, the transport
+//! manages concurrent requests via cooperative demuxing: each `call()`
+//! locks the reader, reads a frame, and dispatches replies to the
+//! correct slot.
 
 use core::marker::PhantomData;
 use serde::{Deserialize, Serialize};
 
+use crate::io::{AsyncBytesRead, AsyncBytesWrite, LocalLock};
 use crate::stream::codec::{Decoder, Encoder};
 use crate::stream::framing::{FrameReader, FrameWriter};
-use crate::stream::routing::{MuxedReplyToken, MuxedSlots, ReplyRouter, RouterSlotHandle, Sequential};
+use crate::stream::routing::{
+    MuxedReplyToken, MuxedSlots, ReplyRouter, RouterSlotHandle, Sequential,
+};
 use crate::transport::{ClientTransport, ServerTransport};
 
 /// A transport composed from a framer, codec, and reply router.
 ///
-/// - `R` / `W`: reader / writer halves of the underlying byte stream.
+/// - `R` / `W`: async reader / writer halves of the underlying byte stream.
 /// - `Framer`: framing strategy (e.g., `LengthPrefixed`).
 /// - `Codec`: serialization codec (e.g., `PostcardCodec`).
 /// - `Router`: reply routing strategy (e.g., `Sequential`, `MuxedSlots`).
 /// - `Req` / `Resp`: the request and response message types.
 pub struct StreamTransport<R, W, Framer, Codec, Router, Req, Resp> {
-    reader: RefCell<R>,
-    writer: RefCell<W>,
+    reader: LocalLock<R>,
+    writer: LocalLock<W>,
     framer: Framer,
     codec: Codec,
     router: Router,
     _phantom: PhantomData<(Req, Resp)>,
 }
 
-/// Constructor when all layers implement `Default` (e.g., unit/ZST types).
 impl<R, W, Framer, Codec, Router, Req, Resp>
     StreamTransport<R, W, Framer, Codec, Router, Req, Resp>
 where
@@ -46,9 +51,6 @@ where
     Router: Default,
 {
     /// Create a new transport with default layer instances.
-    ///
-    /// This is the primary constructor for transports built from zero-sized
-    /// layers like `LengthPrefixed`, `PostcardCodec`, and `Sequential`.
     pub fn new(reader: R, writer: W) -> Self {
         Self::with_layers(reader, writer, Framer::default(), Codec::default(), Router::default())
     }
@@ -66,8 +68,8 @@ impl<R, W, Framer, Codec, Router, Req, Resp>
         router: Router,
     ) -> Self {
         Self {
-            reader: RefCell::new(reader),
-            writer: RefCell::new(writer),
+            reader: LocalLock::new(reader),
+            writer: LocalLock::new(writer),
             framer,
             codec,
             router,
@@ -78,7 +80,8 @@ impl<R, W, Framer, Codec, Router, Req, Resp>
 
 /// Errors from a `StreamTransport`.
 ///
-/// Wraps the framing and codec errors into a single enum.
+/// Wraps the framing and codec errors into a single enum. The framing
+/// error is generic over the reader-or-writer error channel.
 #[derive(Debug)]
 pub enum StreamTransportError<F, C> {
     /// An error from the framing layer.
@@ -108,6 +111,13 @@ impl<T, F: core::fmt::Debug, C: core::fmt::Debug> crate::TransportResult<T>
     }
 }
 
+// Framing error over reader's stream. We also constrain the writer so its
+// framing error type equals the reader's — all concrete adapters
+// (`BlockingIo`, `FuturesIoReader/Writer`, `TokioIoReader/Writer`,
+// `PipeReader/Writer`) share the same `Error` type for both halves.
+type FramingRE<Framer, R> = <Framer as FrameReader>::Error<<R as AsyncBytesRead>::Error>;
+type FramingWE<Framer, W> = <Framer as FrameWriter>::Error<<W as AsyncBytesWrite>::Error>;
+
 /// Reply token for stream transports.
 ///
 /// For `Sequential` routing, this is a unit-like marker — the reply goes
@@ -118,9 +128,7 @@ pub struct StreamReplyToken<Router> {
 
 impl<Router> StreamReplyToken<Router> {
     fn new() -> Self {
-        Self {
-            _phantom: PhantomData,
-        }
+        Self { _phantom: PhantomData }
     }
 }
 
@@ -131,36 +139,42 @@ impl<Router> StreamReplyToken<Router> {
 impl<R, W, Framer, Codec, Req, Resp> ClientTransport<Req, Resp>
     for StreamTransport<R, W, Framer, Codec, Sequential, Resp, Req>
 where
-    R: Read,
-    W: Write,
-    Framer: FrameWriter + FrameReader<Error = <Framer as FrameWriter>::Error>,
+    R: AsyncBytesRead,
+    W: AsyncBytesWrite,
+    Framer: FrameWriter + FrameReader,
+    <Framer as FrameWriter>::Error<W::Error>:
+        Into<FramingWE<Framer, W>>,
     Codec: Encoder + Decoder<Error = <Codec as Encoder>::Error>,
     Req: Serialize,
     Resp: for<'de> Deserialize<'de>,
-    <Framer as FrameWriter>::Error: core::fmt::Debug,
+    FramingWE<Framer, W>: core::fmt::Debug,
+    FramingRE<Framer, R>: core::fmt::Debug + From<FramingWE<Framer, W>>,
     <Codec as Encoder>::Error: core::fmt::Debug,
 {
-    type Error = StreamTransportError<<Framer as FrameWriter>::Error, <Codec as Encoder>::Error>;
+    type Error = StreamTransportError<FramingRE<Framer, R>, <Codec as Encoder>::Error>;
 
     /// Sequential call: send request, read reply. No routing overhead.
     ///
     /// # Cancel Safety
     ///
-    /// This transport uses blocking I/O — the async functions resolve
-    /// immediately and never yield. There are no `.await` cancel points,
-    /// so cancellation cannot occur mid-call.
+    /// The `LocalLock` guards are dropped on cancellation; however,
+    /// dropping mid-write may leave a partially-written frame on the
+    /// wire, desynchronising the stream. Callers should treat an
+    /// interrupted call as unrecoverable for this transport.
     async fn call(&self, req: Req) -> Result<Resp, Self::Error> {
         let bytes = self.codec.encode_to_vec(&req).map_err(StreamTransportError::Codec)?;
         {
-            let mut writer = self.writer.borrow_mut();
+            let mut writer = self.writer.lock().await;
             self.framer
                 .write_frame(&mut *writer, &bytes)
-                .map_err(StreamTransportError::Framing)?;
+                .await
+                .map_err(|e| StreamTransportError::<FramingRE<Framer, R>, _>::Framing(<FramingRE<Framer, R> as From<FramingWE<Framer, W>>>::from(e)))?;
         }
         let buf = {
-            let mut reader = self.reader.borrow_mut();
+            let mut reader = self.reader.lock().await;
             self.framer
                 .read_frame(&mut *reader)
+                .await
                 .map_err(StreamTransportError::Framing)?
         };
         self.codec.decode(&buf).map_err(StreamTransportError::Codec)
@@ -175,33 +189,33 @@ impl<R, W, Framer, Codec, const N: usize, const BUF: usize, Req, Resp>
     ClientTransport<Req, Resp>
     for StreamTransport<R, W, Framer, Codec, MuxedSlots<N, BUF>, Resp, Req>
 where
-    R: Read,
-    W: Write,
-    Framer: FrameWriter + FrameReader<Error = <Framer as FrameWriter>::Error>,
+    R: AsyncBytesRead,
+    W: AsyncBytesWrite,
+    Framer: FrameWriter + FrameReader,
     Codec: Encoder + Decoder<Error = <Codec as Encoder>::Error>,
     Req: Serialize,
     Resp: for<'de> Deserialize<'de>,
-    <Framer as FrameWriter>::Error: core::fmt::Debug,
+    FramingWE<Framer, W>: core::fmt::Debug,
+    FramingRE<Framer, R>: core::fmt::Debug + From<FramingWE<Framer, W>>,
     <Codec as Encoder>::Error: core::fmt::Debug,
 {
-    type Error = StreamTransportError<<Framer as FrameWriter>::Error, <Codec as Encoder>::Error>;
+    type Error = StreamTransportError<FramingRE<Framer, R>, <Codec as Encoder>::Error>;
 
     /// Muxed call: acquire slot → tag frame → send → cooperative demux → return.
     ///
-    /// # Blocking I/O limitation
+    /// The I/O is now genuinely async: `LocalLock` is released between
+    /// frames so other tasks on the same reader/writer pair can make
+    /// progress.
     ///
-    /// The current framing layer uses blocking `std::io::Read`, so the
-    /// cooperative demux loop does not yield between reads. True concurrent
-    /// multiplexing requires an async framing layer (e.g.,
-    /// `tokio::io::AsyncRead`). The routing layer ([`MuxedSlots`]) is fully
-    /// concurrent and ready for async I/O — the transport integration is
-    /// the current bottleneck.
+    /// # Waiter behaviour
     ///
-    /// # Cancel Safety
-    ///
-    /// The slot guard is RAII — dropping the future frees the slot. If the
-    /// request was already sent, the server reply is silently discarded
-    /// when it arrives (the bitmap bit is cleared).
+    /// Only one task at a time is reading from the shared reader lock
+    /// inside the demux loop; others park on the `LocalLock` and are
+    /// woken once the current reader releases. This is adequate for
+    /// the typical "several concurrent calls through one stream"
+    /// pattern. For heavier fan-in, prefer the
+    /// [`DuplexStreamTransport`](crate::stream::DuplexStreamTransport)
+    /// which uses a dedicated pump task.
     async fn call(&self, req: Req) -> Result<Resp, Self::Error> {
         // 1. Acquire a routing slot.
         let slot = self.router.acquire().await.map_err(|e| match e {})?;
@@ -216,10 +230,11 @@ where
 
         // 4. Send frame (acquire writer lock).
         {
-            let mut writer = self.writer.borrow_mut();
+            let mut writer = self.writer.lock().await;
             self.framer
                 .write_frame(&mut *writer, &frame)
-                .map_err(StreamTransportError::Framing)?;
+                .await
+                .map_err(|e| StreamTransportError::<FramingRE<Framer, R>, _>::Framing(<FramingRE<Framer, R> as From<FramingWE<Framer, W>>>::from(e)))?;
         }
 
         // 5. Cooperative demux: read frames and dispatch until our slot
@@ -232,9 +247,15 @@ where
 
             // Read next frame from the stream.
             let frame = {
-                let mut reader = self.reader.borrow_mut();
+                let mut reader = self.reader.lock().await;
+                // Re-check after acquiring the reader — a concurrent
+                // task may have delivered our reply while we waited.
+                if let Some(data) = self.router.try_recv_slot(slot.slot_id()) {
+                    return self.codec.decode(data).map_err(StreamTransportError::Codec);
+                }
                 self.framer
                     .read_frame(&mut *reader)
+                    .await
                     .map_err(StreamTransportError::Framing)?
             };
 
@@ -260,23 +281,25 @@ where
 impl<R, W, Framer, Codec, Req, Resp> ServerTransport<Req, Resp>
     for StreamTransport<R, W, Framer, Codec, Sequential, Req, Resp>
 where
-    R: Read,
-    W: Write,
-    Framer: FrameWriter + FrameReader<Error = <Framer as FrameWriter>::Error>,
+    R: AsyncBytesRead,
+    W: AsyncBytesWrite,
+    Framer: FrameWriter + FrameReader,
     Codec: Encoder + Decoder<Error = <Codec as Encoder>::Error>,
     Req: for<'de> Deserialize<'de>,
     Resp: Serialize,
-    <Framer as FrameWriter>::Error: core::fmt::Debug,
+    FramingWE<Framer, W>: core::fmt::Debug,
+    FramingRE<Framer, R>: core::fmt::Debug + From<FramingWE<Framer, W>>,
     <Codec as Encoder>::Error: core::fmt::Debug,
 {
-    type Error = StreamTransportError<<Framer as FrameWriter>::Error, <Codec as Encoder>::Error>;
+    type Error = StreamTransportError<FramingRE<Framer, R>, <Codec as Encoder>::Error>;
     type ReplyToken = StreamReplyToken<Sequential>;
 
     async fn recv(&mut self) -> Result<(Req, Self::ReplyToken), Self::Error> {
         let buf = {
-            let mut reader = self.reader.borrow_mut();
+            let mut reader = self.reader.lock().await;
             self.framer
                 .read_frame(&mut *reader)
+                .await
                 .map_err(StreamTransportError::Framing)?
         };
         let req = self.codec.decode(&buf).map_err(StreamTransportError::Codec)?;
@@ -285,10 +308,11 @@ where
 
     async fn reply(&self, _token: Self::ReplyToken, resp: Resp) -> Result<(), Self::Error> {
         let bytes = self.codec.encode_to_vec(&resp).map_err(StreamTransportError::Codec)?;
-        let mut writer = self.writer.borrow_mut();
+        let mut writer = self.writer.lock().await;
         self.framer
             .write_frame(&mut *writer, &bytes)
-            .map_err(StreamTransportError::Framing)
+            .await
+            .map_err(|e| StreamTransportError::<FramingRE<Framer, R>, _>::Framing(<FramingRE<Framer, R> as From<FramingWE<Framer, W>>>::from(e)))
     }
 }
 
@@ -300,24 +324,25 @@ impl<R, W, Framer, Codec, const N: usize, const BUF: usize, Req, Resp>
     ServerTransport<Req, Resp>
     for StreamTransport<R, W, Framer, Codec, MuxedSlots<N, BUF>, Req, Resp>
 where
-    R: Read,
-    W: Write,
-    Framer: FrameWriter + FrameReader<Error = <Framer as FrameWriter>::Error>,
+    R: AsyncBytesRead,
+    W: AsyncBytesWrite,
+    Framer: FrameWriter + FrameReader,
     Codec: Encoder + Decoder<Error = <Codec as Encoder>::Error>,
     Req: for<'de> Deserialize<'de>,
     Resp: Serialize,
-    <Framer as FrameWriter>::Error: core::fmt::Debug,
+    FramingWE<Framer, W>: core::fmt::Debug,
+    FramingRE<Framer, R>: core::fmt::Debug + From<FramingWE<Framer, W>>,
     <Codec as Encoder>::Error: core::fmt::Debug,
 {
-    type Error = StreamTransportError<<Framer as FrameWriter>::Error, <Codec as Encoder>::Error>;
+    type Error = StreamTransportError<FramingRE<Framer, R>, <Codec as Encoder>::Error>;
     type ReplyToken = MuxedReplyToken;
 
     async fn recv(&mut self) -> Result<(Req, Self::ReplyToken), Self::Error> {
-        // Read frame: [slot_id][payload].
         let frame = {
-            let mut reader = self.reader.borrow_mut();
+            let mut reader = self.reader.lock().await;
             self.framer
                 .read_frame(&mut *reader)
+                .await
                 .map_err(StreamTransportError::Framing)?
         };
 
@@ -331,92 +356,94 @@ where
     async fn reply(&self, token: Self::ReplyToken, resp: Resp) -> Result<(), Self::Error> {
         let payload = self.codec.encode_to_vec(&resp).map_err(StreamTransportError::Codec)?;
 
-        // Build reply frame: [slot_id][payload].
         let mut frame = Vec::with_capacity(1 + payload.len());
         frame.push(token.slot_id());
         frame.extend_from_slice(&payload);
 
-        let mut writer = self.writer.borrow_mut();
+        let mut writer = self.writer.lock().await;
         self.framer
             .write_frame(&mut *writer, &frame)
-            .map_err(StreamTransportError::Framing)
+            .await
+            .map_err(|e| StreamTransportError::<FramingRE<Framer, R>, _>::Framing(<FramingRE<Framer, R> as From<FramingWE<Framer, W>>>::from(e)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stream::{LengthPrefixed, PostcardCodec, Sequential};
+    use crate::io::cursor::{cursor_read, cursor_write};
+    use crate::io::mem_pipe::duplex;
     use crate::stream::routing::MuxedSlots;
-    use std::io::Cursor;
+    use crate::stream::{LengthPrefixed, PostcardCodec, Sequential};
 
-    /// Sequential round-trip: client sends, server receives, server replies, client reads.
-    #[test]
-    fn sequential_round_trip() {
-        // Shared buffers simulating a bidirectional pipe.
-        let client_to_server = Vec::new();
-        let server_to_client = Vec::new();
-
-        // Client writes to c2s, server reads from c2s.
-        // Server writes to s2c, client reads from s2c.
-        type T<R, W> = StreamTransport<R, W, LengthPrefixed, PostcardCodec, Sequential, u32, u32>;
-
-        // --- client sends ---
-        let client: T<Cursor<Vec<u8>>, Vec<u8>> =
-            T::new(Cursor::new(server_to_client), client_to_server);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-
-        // Encode the request.
-        let req: u32 = 42;
-        let req_bytes = PostcardCodec.encode_to_vec(&req).unwrap();
-        {
-            let mut w = client.writer.borrow_mut();
-            LengthPrefixed.write_frame(&mut *w, &req_bytes).unwrap();
-        }
-
-        // Extract what the client wrote (the c2s buffer).
-        let c2s_bytes = {
-            let w = client.writer.borrow();
-            w.clone()
-        };
-
-        // --- server receives ---
-        let mut server: T<Cursor<Vec<u8>>, Vec<u8>> =
-            T::new(Cursor::new(c2s_bytes), Vec::new());
-        let (received_req, token) = rt.block_on(server.recv()).unwrap();
-        assert_eq!(received_req, 42u32);
-
-        // --- server replies ---
-        let resp: u32 = 100;
-        rt.block_on(server.reply(token, resp)).unwrap();
-
-        let s2c_bytes = {
-            let w = server.writer.borrow();
-            w.clone()
-        };
-
-        // --- client reads reply ---
-        {
-            let mut r = client.reader.borrow_mut();
-            *r = Cursor::new(s2c_bytes);
-        }
-        let reply_buf = {
-            let mut r = client.reader.borrow_mut();
-            LengthPrefixed.read_frame(&mut *r).unwrap()
-        };
-        let reply: u32 = PostcardCodec.decode(&reply_buf).unwrap();
-        assert_eq!(reply, 100u32);
+    fn block_on<F: core::future::Future>(fut: F) -> F::Output {
+        futures_lite::future::block_on(fut)
     }
 
-    /// Muxed server round-trip: client sends frame with slot_id, server
-    /// parses it, replies with same slot_id.
+    #[test]
+    fn sequential_round_trip_via_cursors() {
+        // Encode a request bytestream, feed it through a server, capture
+        // the reply, feed that through a client reader.
+        type ServerT =
+            StreamTransport<
+                crate::io::cursor::CursorRead,
+                crate::io::cursor::CursorWrite,
+                LengthPrefixed,
+                PostcardCodec,
+                Sequential,
+                u32, // Req
+                u32, // Resp
+            >;
+        type ClientT =
+            StreamTransport<
+                crate::io::cursor::CursorRead,
+                crate::io::cursor::CursorWrite,
+                LengthPrefixed,
+                PostcardCodec,
+                Sequential,
+                u32, // Incoming (Resp)
+                u32, // Outgoing (Req)
+            >;
+
+        // Client writes req=42 into its writer buffer.
+        let client: ClientT = ClientT::new(cursor_read(Vec::new()), cursor_write());
+        let mut w = block_on(client.writer.lock());
+        let bytes = PostcardCodec
+            .encode_to_vec(&42u32)
+            .unwrap();
+        block_on(LengthPrefixed.write_frame(&mut *w, &bytes)).unwrap();
+        let c2s = w.0.clone();
+        drop(w);
+
+        // Server receives.
+        let mut server: ServerT = ServerT::new(cursor_read(c2s), cursor_write());
+        let (req, token) = block_on(server.recv()).unwrap();
+        assert_eq!(req, 42u32);
+        block_on(server.reply(token, 100u32)).unwrap();
+
+        let s2c = block_on(server.writer.lock()).0.clone();
+
+        // Client reads the reply.
+        *block_on(client.reader.lock()) = cursor_read(s2c);
+        let buf = {
+            let mut r = block_on(client.reader.lock());
+            block_on(LengthPrefixed.read_frame(&mut *r)).unwrap()
+        };
+        let reply: u32 = PostcardCodec.decode(&buf).unwrap();
+        assert_eq!(reply, 100);
+    }
+
     #[test]
     fn muxed_server_round_trip() {
-        type T<R, W> = StreamTransport<
-            R, W, LengthPrefixed, PostcardCodec, MuxedSlots<4, 128>, u32, u32,
+        type T = StreamTransport<
+            crate::io::cursor::CursorRead,
+            crate::io::cursor::CursorWrite,
+            LengthPrefixed,
+            PostcardCodec,
+            MuxedSlots<4, 128>,
+            u32,
+            u32,
         >;
-
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
 
         // Simulate client sending a muxed frame: [slot_id=3][postcard(42)]
         let slot_id: u8 = 3;
@@ -425,69 +452,56 @@ mod tests {
         frame.push(slot_id);
         frame.extend_from_slice(&payload);
 
-        let mut c2s = Vec::new();
-        LengthPrefixed.write_frame(&mut c2s, &frame).unwrap();
+        let mut c2s_writer = cursor_write();
+        block_on(LengthPrefixed.write_frame(&mut c2s_writer, &frame)).unwrap();
+        let c2s_bytes = c2s_writer.0;
 
         // Server receives the muxed request.
-        let mut server: T<Cursor<Vec<u8>>, Vec<u8>> =
-            T::new(Cursor::new(c2s), Vec::new());
-        let (req, token) = rt.block_on(server.recv()).unwrap();
+        let mut server: T = T::new(cursor_read(c2s_bytes), cursor_write());
+        let (req, token) = block_on(server.recv()).unwrap();
         assert_eq!(req, 42u32);
         assert_eq!(token.slot_id(), 3);
 
-        // Server replies.
-        rt.block_on(server.reply(token, 100u32)).unwrap();
+        block_on(server.reply(token, 100u32)).unwrap();
 
-        // Read back the reply frame and verify it has the correct slot_id.
-        let s2c = server.writer.borrow().clone();
-        let reply_frame = LengthPrefixed.read_frame(&mut Cursor::new(s2c)).unwrap();
-        assert_eq!(reply_frame[0], 3u8); // slot_id preserved
+        // Read back the reply frame and verify slot_id preserved.
+        let s2c_bytes = block_on(server.writer.lock()).0.clone();
+        let mut s2c_reader = cursor_read(s2c_bytes);
+        let reply_frame = block_on(LengthPrefixed.read_frame(&mut s2c_reader)).unwrap();
+        assert_eq!(reply_frame[0], 3u8);
         let reply: u32 = PostcardCodec.decode(&reply_frame[1..]).unwrap();
         assert_eq!(reply, 100u32);
     }
 
-    /// Muxed client-server end-to-end: client.call() sends a muxed request,
-    /// a "server" (running on another thread) receives and replies, and the
-    /// client gets the correct response.
     #[test]
-    fn muxed_client_call_end_to_end() {
-        use std::os::unix::net::UnixStream;
-
-        let (client_sock, server_sock) = UnixStream::pair().unwrap();
-        let client_r = client_sock.try_clone().unwrap();
-        let client_w = client_sock;
-        let server_r = server_sock.try_clone().unwrap();
-        let server_w = server_sock;
+    fn muxed_client_call_end_to_end_over_mem_pipe() {
+        use crate::io::mem_pipe::{PipeReader, PipeWriter};
 
         type ClientT = StreamTransport<
-            std::os::unix::net::UnixStream,
-            std::os::unix::net::UnixStream,
-            LengthPrefixed, PostcardCodec, MuxedSlots<4, 128>,
-            u32, // Resp (Incoming for client = Outgoing for server)
-            u32, // Req  (Outgoing for client = Incoming for server)
+            PipeReader, PipeWriter, LengthPrefixed, PostcardCodec,
+            MuxedSlots<4, 128>, u32, u32,
         >;
         type ServerT = StreamTransport<
-            std::os::unix::net::UnixStream,
-            std::os::unix::net::UnixStream,
-            LengthPrefixed, PostcardCodec, MuxedSlots<4, 128>,
-            u32, // Req  (Incoming for server)
-            u32, // Resp (Outgoing for server)
+            PipeReader, PipeWriter, LengthPrefixed, PostcardCodec,
+            MuxedSlots<4, 128>, u32, u32,
         >;
 
-        // Server thread: read one request, reply with req * 2.
-        let server_handle = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-            let mut server: ServerT = ServerT::new(server_r, server_w);
-            let (req, token) = rt.block_on(server.recv()).unwrap();
-            rt.block_on(server.reply(token, req * 2)).unwrap();
+        let ((r_a, w_a), (r_b, w_b)) = duplex();
+
+        let client: ClientT = ClientT::new(r_a, w_a);
+        let mut server: ServerT = ServerT::new(r_b, w_b);
+
+        // Run server and client concurrently on a single executor.
+        let result = block_on(async {
+            let server_fut = async {
+                let (req, token) = server.recv().await.unwrap();
+                server.reply(token, req * 2).await.unwrap();
+            };
+            let client_fut = async { client.call(21u32).await.unwrap() };
+            let (resp, _) = futures_lite::future::zip(client_fut, server_fut).await;
+            resp
         });
 
-        // Client: call with 21, expect 42.
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let client: ClientT = ClientT::new(client_r, client_w);
-        let resp: u32 = rt.block_on(client.call(21u32)).unwrap();
-        assert_eq!(resp, 42);
-
-        server_handle.join().unwrap();
+        assert_eq!(result, 42);
     }
 }

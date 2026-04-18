@@ -4,7 +4,6 @@
 //! - `testing-stdio combined-server` — runs the combined (Greeter + Math) server
 //! - `testing-stdio` — spawns both server types and acts as a client for each
 
-use chanapi::transport_postcard::PostcardStream;
 use testing_service::{
     GreeterRequest, GreeterResponse, GreeterServiceSync, greeter_serve_sync,
     MathServiceSync,
@@ -72,7 +71,7 @@ fn run_greeter_server() {
     eprintln!("[server] starting greeter on stdio");
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
-    let mut transport = PostcardStream::<_, _, GreeterRequest, GreeterResponse>::new(stdin, stdout);
+    let mut transport = chanapi::transport_postcard::new_postcard_stream::<_, _, GreeterRequest, GreeterResponse>(stdin, stdout);
     let svc = GreeterImpl;
     let _ = greeter_serve_sync(&svc, &mut transport, &SyncBlockOn);
     eprintln!("[server] greeter done");
@@ -82,7 +81,7 @@ fn run_combined_server() {
     eprintln!("[server] starting combined on stdio");
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
-    let mut transport = PostcardStream::<_, _, CombinedRequest, CombinedResponse>::new(stdin, stdout);
+    let mut transport = chanapi::transport_postcard::new_postcard_stream::<_, _, CombinedRequest, CombinedResponse>(stdin, stdout);
     let svc = CombinedImpl;
     let _ = combined_serve_sync(&svc, &mut transport, &SyncBlockOn);
     eprintln!("[server] combined done");
@@ -106,7 +105,7 @@ fn run_greeter_client() {
     let child_stdout = child.stdout.take().unwrap();
 
     let transport =
-        PostcardStream::<_, _, GreeterResponse, GreeterRequest>::new(child_stdout, child_stdin);
+        chanapi::transport_postcard::new_postcard_stream::<_, _, GreeterResponse, GreeterRequest>(child_stdout, child_stdin);
     let client = testing_service::GreeterClientSync::new(
         testing_service::GreeterClient::new(transport),
         SyncBlockOn,
@@ -141,7 +140,7 @@ fn run_combined_client() {
     let child_stdout = child.stdout.take().unwrap();
 
     let transport =
-        PostcardStream::<_, _, CombinedResponse, CombinedRequest>::new(child_stdout, child_stdin);
+        chanapi::transport_postcard::new_postcard_stream::<_, _, CombinedResponse, CombinedRequest>(child_stdout, child_stdin);
     let client = testing_service::CombinedClientSync::new(
         testing_service::CombinedClient::new(transport),
         SyncBlockOn,

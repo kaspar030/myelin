@@ -63,6 +63,9 @@ pub mod block_on;
 pub mod error;
 pub mod transport;
 
+#[cfg(feature = "std")]
+pub mod io;
+
 #[cfg(feature = "tokio")]
 pub mod transport_tokio;
 
@@ -74,6 +77,9 @@ pub mod stream;
 
 #[cfg(feature = "postcard")]
 pub mod transport_postcard;
+
+#[cfg(feature = "smol")]
+pub mod transport_smol;
 
 pub use block_on::BlockOn;
 pub use error::{CallError, TransportResult};
