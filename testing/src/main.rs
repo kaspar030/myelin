@@ -4,9 +4,8 @@
 //! client handles are obtained separately.
 
 use testing_service::{
-    GreeterClient, GreeterService, GreeterTokioService, greeter_serve,
-    MathService,
-    CombinedClient, CombinedTokioService, combined_serve,
+    CombinedClient, CombinedTokioService, GreeterClient, GreeterService, GreeterTokioService,
+    MathService, combined_serve, greeter_serve,
 };
 
 // -- Service implementation --
@@ -65,14 +64,20 @@ async fn main() {
 
     let client = GreeterClient::new(service.client());
 
-    let greeting = client.greet("mama".to_string()).await.expect("greet failed");
+    let greeting = client
+        .greet("mama".to_string())
+        .await
+        .expect("greet failed");
     println!("{greeting}");
 
     let healthy = client.health().await.expect("health failed");
     println!("healthy: {healthy}");
 
     let client2 = GreeterClient::new(service.client());
-    let greeting2 = client2.greet("papa".to_string()).await.expect("greet failed");
+    let greeting2 = client2
+        .greet("papa".to_string())
+        .await
+        .expect("greet failed");
     println!("{greeting2}");
 
     drop(client);
@@ -98,21 +103,37 @@ async fn main() {
     let combined_client = CombinedClient::new(combined_service.client());
 
     // Use the greeter sub-service
-    let greeting = combined_client.greeter().greet("world".to_string()).await.expect("greet failed");
+    let greeting = combined_client
+        .greeter()
+        .greet("world".to_string())
+        .await
+        .expect("greet failed");
     println!("{greeting}");
 
-    let healthy = combined_client.greeter().health().await.expect("health failed");
+    let healthy = combined_client
+        .greeter()
+        .health()
+        .await
+        .expect("health failed");
     println!("healthy: {healthy}");
 
     // Use the math sub-service
     let sum = combined_client.math().add(2, 3).await.expect("add failed");
     println!("2 + 3 = {sum}");
 
-    let product = combined_client.math().multiply(4, 5).await.expect("multiply failed");
+    let product = combined_client
+        .math()
+        .multiply(4, 5)
+        .await
+        .expect("multiply failed");
     println!("4 * 5 = {product}");
 
     // Verify edge cases
-    let big_sum = combined_client.math().add(i32::MAX, 1).await.expect("add failed");
+    let big_sum = combined_client
+        .math()
+        .add(i32::MAX, 1)
+        .await
+        .expect("add failed");
     println!("MAX + 1 = {big_sum}");
 
     drop(combined_client);

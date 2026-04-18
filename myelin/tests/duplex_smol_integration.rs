@@ -85,7 +85,10 @@ fn smol_duplex_two_services_both_directions() {
         let server_b = async move {
             for _ in 0..3 {
                 let (req, token) = echo_srv.recv().await.unwrap();
-                echo_srv.reply(token, EchoResp(format!("echo: {}", req.0))).await.unwrap();
+                echo_srv
+                    .reply(token, EchoResp(format!("echo: {}", req.0)))
+                    .await
+                    .unwrap();
             }
         };
 
@@ -94,10 +97,8 @@ fn smol_duplex_two_services_both_directions() {
             let r1 = echo_client_a.call(EchoReq("one".to_string()));
             let r2 = echo_client_a.call(EchoReq("two".to_string()));
             let r3 = echo_client_a.call(EchoReq("three".to_string()));
-            let ((r1, r2), r3) = futures_lite::future::zip(
-                futures_lite::future::zip(r1, r2),
-                r3,
-            ).await;
+            let ((r1, r2), r3) =
+                futures_lite::future::zip(futures_lite::future::zip(r1, r2), r3).await;
             (r1.unwrap(), r2.unwrap(), r3.unwrap())
         };
 
@@ -105,10 +106,8 @@ fn smol_duplex_two_services_both_directions() {
             let r1 = ping_client_b.call(PingReq(1));
             let r2 = ping_client_b.call(PingReq(2));
             let r3 = ping_client_b.call(PingReq(3));
-            let ((r1, r2), r3) = futures_lite::future::zip(
-                futures_lite::future::zip(r1, r2),
-                r3,
-            ).await;
+            let ((r1, r2), r3) =
+                futures_lite::future::zip(futures_lite::future::zip(r1, r2), r3).await;
             (r1.unwrap(), r2.unwrap(), r3.unwrap())
         };
 
@@ -116,12 +115,17 @@ fn smol_duplex_two_services_both_directions() {
             let ((echos, pings), _) = futures_lite::future::zip(
                 futures_lite::future::zip(client_a, client_b),
                 futures_lite::future::zip(server_a, server_b),
-            ).await;
+            )
+            .await;
             let mut echo_msgs = [echos.0.0, echos.1.0, echos.2.0];
             echo_msgs.sort();
             assert_eq!(
                 echo_msgs,
-                ["echo: one".to_string(), "echo: three".to_string(), "echo: two".to_string()]
+                [
+                    "echo: one".to_string(),
+                    "echo: three".to_string(),
+                    "echo: two".to_string()
+                ]
             );
             let mut ping_vals = [pings.0.0, pings.1.0, pings.2.0];
             ping_vals.sort();
@@ -129,11 +133,9 @@ fn smol_duplex_two_services_both_directions() {
         };
 
         // Pumps never complete normally. `or` returns when work does.
-        futures_lite::future::or(
-            work,
-            async {
-                let _ = futures_lite::future::zip(pump_a.run(), pump_b.run()).await;
-            },
-        ).await;
+        futures_lite::future::or(work, async {
+            let _ = futures_lite::future::zip(pump_a.run(), pump_b.run()).await;
+        })
+        .await;
     });
 }

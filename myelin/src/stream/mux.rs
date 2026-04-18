@@ -99,6 +99,7 @@ pub trait ServiceApiId {
 ///
 /// This trait is object-safe (returns `Pin<Box<dyn Future>>`) to support
 /// runtime registration of handlers from independent crates.
+#[allow(clippy::type_complexity)]
 pub trait ApiHandler: Send + Sync {
     /// Handle a request and produce a response.
     ///

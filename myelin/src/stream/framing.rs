@@ -110,12 +110,18 @@ impl FrameReader for LengthPrefixed {
         // wanting to treat EOF as `Closed` should match on the wrapped
         // error. We can't do a blanket translation here without taking
         // a dependency on `std::io::ErrorKind`.
-        reader.read_exact(&mut len_buf).await.map_err(FramingError::Io)?;
+        reader
+            .read_exact(&mut len_buf)
+            .await
+            .map_err(FramingError::Io)?;
         let len = u32::from_le_bytes(len_buf) as usize;
 
         // Read payload.
         let mut buf = vec![0u8; len];
-        reader.read_exact(&mut buf).await.map_err(FramingError::Io)?;
+        reader
+            .read_exact(&mut buf)
+            .await
+            .map_err(FramingError::Io)?;
         Ok(buf)
     }
 }

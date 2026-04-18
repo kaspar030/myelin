@@ -119,7 +119,7 @@ pub enum ReturnKind {
     /// Implicit `()` (no `-> ...`).
     Unit,
     /// Anything else, captured verbatim.
-    Type(Type),
+    Type(Box<Type>),
 }
 
 impl ServiceTrait {
@@ -415,7 +415,7 @@ fn parse_method(f: &TraitItemFn) -> syn::Result<ServiceMethod> {
     // Return type.
     let ret = match &sig.output {
         ReturnType::Default => ReturnKind::Unit,
-        ReturnType::Type(_, ty) => ReturnKind::Type((**ty).clone()),
+        ReturnType::Type(_, ty) => ReturnKind::Type(Box::new((**ty).clone())),
     };
 
     let is_async = sig.asyncness.is_some();

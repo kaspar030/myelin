@@ -71,7 +71,12 @@ impl std::error::Error for PipeError {}
 /// Create a half-duplex in-memory pipe.
 pub fn pipe() -> (PipeReader, PipeWriter) {
     let inner = Arc::new(PipeInner::new());
-    (PipeReader { inner: inner.clone() }, PipeWriter { inner })
+    (
+        PipeReader {
+            inner: inner.clone(),
+        },
+        PipeWriter { inner },
+    )
 }
 
 /// Create a full-duplex in-memory pipe: returns `((r_a, w_a), (r_b, w_b))`

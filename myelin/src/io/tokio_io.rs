@@ -5,7 +5,6 @@
 //! with) the `tokio` feature, which is for in-process channel transport
 //! only.
 
-use core::future::Future;
 use std::io;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -16,19 +15,19 @@ use super::{AsyncBytesRead, AsyncBytesWrite};
 pub struct TokioIoReader<R>(pub R);
 
 impl<R> TokioIoReader<R> {
-    pub const fn new(inner: R) -> Self { Self(inner) }
-    pub fn into_inner(self) -> R { self.0 }
+    pub const fn new(inner: R) -> Self {
+        Self(inner)
+    }
+    pub fn into_inner(self) -> R {
+        self.0
+    }
 }
 
 impl<R: AsyncRead + Unpin> AsyncBytesRead for TokioIoReader<R> {
     type Error = io::Error;
 
-    fn read_exact(&mut self, buf: &mut [u8])
-        -> impl Future<Output = Result<(), io::Error>>
-    {
-        async move {
-            self.0.read_exact(buf).await.map(|_| ())
-        }
+    async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), io::Error> {
+        self.0.read_exact(buf).await.map(|_| ())
     }
 }
 
@@ -36,21 +35,23 @@ impl<R: AsyncRead + Unpin> AsyncBytesRead for TokioIoReader<R> {
 pub struct TokioIoWriter<W>(pub W);
 
 impl<W> TokioIoWriter<W> {
-    pub const fn new(inner: W) -> Self { Self(inner) }
-    pub fn into_inner(self) -> W { self.0 }
+    pub const fn new(inner: W) -> Self {
+        Self(inner)
+    }
+    pub fn into_inner(self) -> W {
+        self.0
+    }
 }
 
 impl<W: AsyncWrite + Unpin> AsyncBytesWrite for TokioIoWriter<W> {
     type Error = io::Error;
 
-    fn write_all(&mut self, buf: &[u8])
-        -> impl Future<Output = Result<(), io::Error>>
-    {
-        async move { self.0.write_all(buf).await }
+    async fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error> {
+        self.0.write_all(buf).await
     }
 
-    fn flush(&mut self) -> impl Future<Output = Result<(), io::Error>> {
-        async move { self.0.flush().await }
+    async fn flush(&mut self) -> Result<(), io::Error> {
+        self.0.flush().await
     }
 }
 
@@ -58,7 +59,7 @@ impl<W: AsyncWrite + Unpin> AsyncBytesWrite for TokioIoWriter<W> {
 mod tests {
     use super::*;
     use crate::io::{AsyncBytesRead, AsyncBytesWrite};
-    use crate::stream::{LengthPrefixed, PostcardCodec, MuxedSlots, StreamTransport};
+    use crate::stream::{LengthPrefixed, MuxedSlots, PostcardCodec, StreamTransport};
     use crate::transport::{ClientTransport, ServerTransport};
 
     #[tokio::test]
@@ -89,14 +90,20 @@ mod tests {
         type ClientT = StreamTransport<
             TokioIoReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
             TokioIoWriter<tokio::io::WriteHalf<tokio::io::DuplexStream>>,
-            LengthPrefixed, PostcardCodec,
-            MuxedSlots<4, 128>, u32, u32,
+            LengthPrefixed,
+            PostcardCodec,
+            MuxedSlots<4, 128>,
+            u32,
+            u32,
         >;
         type ServerT = StreamTransport<
             TokioIoReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
             TokioIoWriter<tokio::io::WriteHalf<tokio::io::DuplexStream>>,
-            LengthPrefixed, PostcardCodec,
-            MuxedSlots<4, 128>, u32, u32,
+            LengthPrefixed,
+            PostcardCodec,
+            MuxedSlots<4, 128>,
+            u32,
+            u32,
         >;
 
         let client: ClientT = ClientT::new(TokioIoReader::new(ar), TokioIoWriter::new(aw));

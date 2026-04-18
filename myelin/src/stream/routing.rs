@@ -230,11 +230,7 @@ impl<const N: usize, const BUF: usize> MuxedSlots<N, BUF> {
 
     /// The valid-slot mask: bits `0..N` are set.
     const fn valid_mask() -> u32 {
-        if N == 32 {
-            u32::MAX
-        } else {
-            (1u32 << N) - 1
-        }
+        if N == 32 { u32::MAX } else { (1u32 << N) - 1 }
     }
 
     /// Try to allocate a slot via CAS on the bitmap.
@@ -607,9 +603,7 @@ mod tests {
         // trigger the race in a unit test, but we verify the generation
         // counter increments on free.
         drop(slot2);
-        let gen_now = router.slots[id as usize]
-            .generation
-            .load(Ordering::Relaxed);
+        let gen_now = router.slots[id as usize].generation.load(Ordering::Relaxed);
         assert_eq!(gen_now, gen1.wrapping_add(2));
     }
 

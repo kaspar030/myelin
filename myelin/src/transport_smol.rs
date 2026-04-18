@@ -26,7 +26,9 @@ impl<Req, Resp> SmolService<Req, Resp> {
 
     /// Get a client handle. Cloneable — multiple clients can share the same channel.
     pub fn client(&self) -> SmolClient<Req, Resp> {
-        SmolClient { tx: self.tx.clone() }
+        SmolClient {
+            tx: self.tx.clone(),
+        }
     }
 
     /// Take the server handle. Can only be called once.
@@ -90,7 +92,10 @@ where
             .send((req, reply_tx))
             .await
             .map_err(|_| SmolLocalError::ChannelClosed)?;
-        reply_rx.recv().await.map_err(|_| SmolLocalError::ChannelClosed)
+        reply_rx
+            .recv()
+            .await
+            .map_err(|_| SmolLocalError::ChannelClosed)
     }
 }
 
@@ -103,11 +108,17 @@ where
     type ReplyToken = Sender<Resp>;
 
     async fn recv(&mut self) -> Result<(Req, Self::ReplyToken), Self::Error> {
-        self.rx.recv().await.map_err(|_| SmolLocalError::ChannelClosed)
+        self.rx
+            .recv()
+            .await
+            .map_err(|_| SmolLocalError::ChannelClosed)
     }
 
     async fn reply(&self, token: Self::ReplyToken, resp: Resp) -> Result<(), Self::Error> {
-        token.send(resp).await.map_err(|_| SmolLocalError::ChannelClosed)
+        token
+            .send(resp)
+            .await
+            .map_err(|_| SmolLocalError::ChannelClosed)
     }
 }
 
@@ -155,7 +166,8 @@ mod tests {
                 let ((r1, r2), (r3, r4)) = futures_lite::future::zip(
                     futures_lite::future::zip(a, b),
                     futures_lite::future::zip(c, d),
-                ).await;
+                )
+                .await;
                 (r1.unwrap(), r2.unwrap(), r3.unwrap(), r4.unwrap())
             };
 

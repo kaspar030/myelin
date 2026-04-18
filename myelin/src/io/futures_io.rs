@@ -36,7 +36,12 @@ impl<R: AsyncRead + Unpin> AsyncBytesRead for FuturesIoReader<R> {
     type Error = io::Error;
 
     async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), io::Error> {
-        ReadExactFuture { reader: &mut self.0, buf, filled: 0 }.await
+        ReadExactFuture {
+            reader: &mut self.0,
+            buf,
+            filled: 0,
+        }
+        .await
     }
 }
 
@@ -90,11 +95,19 @@ impl<W: AsyncWrite + Unpin> AsyncBytesWrite for FuturesIoWriter<W> {
     type Error = io::Error;
 
     async fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error> {
-        WriteAllFuture { writer: &mut self.0, buf, written: 0 }.await
+        WriteAllFuture {
+            writer: &mut self.0,
+            buf,
+            written: 0,
+        }
+        .await
     }
 
     async fn flush(&mut self) -> Result<(), io::Error> {
-        FlushFuture { writer: &mut self.0 }.await
+        FlushFuture {
+            writer: &mut self.0,
+        }
+        .await
     }
 }
 

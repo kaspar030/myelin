@@ -119,7 +119,11 @@ pub fn parse_duplex_frame(frame: &[u8]) -> Result<(DuplexHeader, &[u8]), DuplexF
     let api_id = u16::from_le_bytes([frame[1], frame[2]]);
     let slot_id = frame[3];
     Ok((
-        DuplexHeader { kind, api_id, slot_id },
+        DuplexHeader {
+            kind,
+            api_id,
+            slot_id,
+        },
         &frame[DUPLEX_HEADER_LEN..],
     ))
 }
@@ -153,7 +157,11 @@ impl ServerInbox {
     }
 
     fn push(&self, payload: Vec<u8>, slot_id: u8) {
-        self.inner.queue.lock().unwrap().push_back((payload, slot_id));
+        self.inner
+            .queue
+            .lock()
+            .unwrap()
+            .push_back((payload, slot_id));
         self.inner.waker.wake();
     }
 
@@ -199,9 +207,7 @@ pub struct DuplexShared<W, Framer, Codec, const N: usize, const BUF: usize> {
     codec: Codec,
 }
 
-impl<W, Framer, Codec, const N: usize, const BUF: usize>
-    DuplexShared<W, Framer, Codec, N, BUF>
-{
+impl<W, Framer, Codec, const N: usize, const BUF: usize> DuplexShared<W, Framer, Codec, N, BUF> {
     fn register_inbox(&self, api_id: u16) -> ServerInbox {
         let mut map = self.inboxes.lock().unwrap();
         if let Some(existing) = map.get(&api_id) {
@@ -275,9 +281,10 @@ impl<R, W, Framer, Codec, const N: usize, const BUF: usize>
     /// registration after pump start is allowed but any request that
     /// arrives before registration returns a `UnknownApi` frame-drop
     /// in the pump.
-    pub fn server_half<Req, Resp>(&self, api_id: u16)
-        -> DuplexServerHalf<W, Framer, Codec, N, BUF, Req, Resp>
-    {
+    pub fn server_half<Req, Resp>(
+        &self,
+        api_id: u16,
+    ) -> DuplexServerHalf<W, Framer, Codec, N, BUF, Req, Resp> {
         let inbox = self.shared.register_inbox(api_id);
         DuplexServerHalf {
             shared: self.shared.clone(),
@@ -288,9 +295,10 @@ impl<R, W, Framer, Codec, const N: usize, const BUF: usize>
     }
 
     /// Create a client half for calling the peer's API at `api_id`.
-    pub fn client_half<Req, Resp>(&self, api_id: u16)
-        -> DuplexClientHalf<W, Framer, Codec, N, BUF, Req, Resp>
-    {
+    pub fn client_half<Req, Resp>(
+        &self,
+        api_id: u16,
+    ) -> DuplexClientHalf<W, Framer, Codec, N, BUF, Req, Resp> {
         DuplexClientHalf {
             shared: self.shared.clone(),
             api_id,
@@ -300,12 +308,19 @@ impl<R, W, Framer, Codec, const N: usize, const BUF: usize>
 
     /// Split into the pump (consuming the reader) and a handle used to
     /// vend additional halves after the fact.
-    pub fn split(self)
-        -> (DuplexPump<R, W, Framer, Codec, N, BUF>, DuplexHandle<W, Framer, Codec, N, BUF>)
-    {
+    #[allow(clippy::type_complexity)]
+    pub fn split(
+        self,
+    ) -> (
+        DuplexPump<R, W, Framer, Codec, N, BUF>,
+        DuplexHandle<W, Framer, Codec, N, BUF>,
+    ) {
         let shared = self.shared.clone();
         (
-            DuplexPump { reader: self.reader, shared: self.shared },
+            DuplexPump {
+                reader: self.reader,
+                shared: self.shared,
+            },
             DuplexHandle { shared },
         )
     }
@@ -325,17 +340,18 @@ impl<W, Framer, Codec, const N: usize, const BUF: usize> Clone
     for DuplexHandle<W, Framer, Codec, N, BUF>
 {
     fn clone(&self) -> Self {
-        Self { shared: self.shared.clone() }
+        Self {
+            shared: self.shared.clone(),
+        }
     }
 }
 
-impl<W, Framer, Codec, const N: usize, const BUF: usize>
-    DuplexHandle<W, Framer, Codec, N, BUF>
-{
+impl<W, Framer, Codec, const N: usize, const BUF: usize> DuplexHandle<W, Framer, Codec, N, BUF> {
     /// Register a server half for `api_id`.
-    pub fn server_half<Req, Resp>(&self, api_id: u16)
-        -> DuplexServerHalf<W, Framer, Codec, N, BUF, Req, Resp>
-    {
+    pub fn server_half<Req, Resp>(
+        &self,
+        api_id: u16,
+    ) -> DuplexServerHalf<W, Framer, Codec, N, BUF, Req, Resp> {
         let inbox = self.shared.register_inbox(api_id);
         DuplexServerHalf {
             shared: self.shared.clone(),
@@ -346,9 +362,10 @@ impl<W, Framer, Codec, const N: usize, const BUF: usize>
     }
 
     /// Create a client half for calling the peer's API at `api_id`.
-    pub fn client_half<Req, Resp>(&self, api_id: u16)
-        -> DuplexClientHalf<W, Framer, Codec, N, BUF, Req, Resp>
-    {
+    pub fn client_half<Req, Resp>(
+        &self,
+        api_id: u16,
+    ) -> DuplexClientHalf<W, Framer, Codec, N, BUF, Req, Resp> {
         DuplexClientHalf {
             shared: self.shared.clone(),
             api_id,
@@ -386,21 +403,24 @@ impl<F: core::fmt::Display> core::fmt::Display for DuplexPumpError<F> {
     }
 }
 
-impl<R, W, Framer, Codec, const N: usize, const BUF: usize>
-    DuplexPump<R, W, Framer, Codec, N, BUF>
+impl<R, W, Framer, Codec, const N: usize, const BUF: usize> DuplexPump<R, W, Framer, Codec, N, BUF>
 where
     R: AsyncBytesRead,
     Framer: FrameReader,
 {
     /// Drive the pump until the stream closes.
-    pub async fn run(mut self) -> Result<(), DuplexPumpError<<Framer as FrameReader>::Error<R::Error>>> {
+    pub async fn run(
+        mut self,
+    ) -> Result<(), DuplexPumpError<<Framer as FrameReader>::Error<R::Error>>> {
         let res = self.run_inner().await;
         // Signal all server halves that no more requests will arrive.
         self.shared.close_inboxes();
         res
     }
 
-    async fn run_inner(&mut self) -> Result<(), DuplexPumpError<<Framer as FrameReader>::Error<R::Error>>> {
+    async fn run_inner(
+        &mut self,
+    ) -> Result<(), DuplexPumpError<<Framer as FrameReader>::Error<R::Error>>> {
         loop {
             let frame = self
                 .shared
@@ -409,8 +429,7 @@ where
                 .await
                 .map_err(DuplexPumpError::Framing)?;
 
-            let (hdr, payload) = parse_duplex_frame(&frame)
-                .map_err(DuplexPumpError::BadFrame)?;
+            let (hdr, payload) = parse_duplex_frame(&frame).map_err(DuplexPumpError::BadFrame)?;
 
             match hdr.kind {
                 KIND_RESPONSE => {
@@ -456,8 +475,7 @@ pub struct DuplexClientHalf<W, Framer, Codec, const N: usize, const BUF: usize, 
     _phantom: PhantomData<(Req, Resp)>,
 }
 
-impl<W, Framer, Codec, const N: usize, const BUF: usize, Req, Resp>
-    ClientTransport<Req, Resp>
+impl<W, Framer, Codec, const N: usize, const BUF: usize, Req, Resp> ClientTransport<Req, Resp>
     for DuplexClientHalf<W, Framer, Codec, N, BUF, Req, Resp>
 where
     W: AsyncBytesWrite,
@@ -468,10 +486,8 @@ where
     <Framer as FrameWriter>::Error<W::Error>: core::fmt::Debug,
     <Codec as Encoder>::Error: core::fmt::Debug,
 {
-    type Error = StreamTransportError<
-        <Framer as FrameWriter>::Error<W::Error>,
-        <Codec as Encoder>::Error,
-    >;
+    type Error =
+        StreamTransportError<<Framer as FrameWriter>::Error<W::Error>, <Codec as Encoder>::Error>;
 
     async fn call(&self, req: Req) -> Result<Resp, Self::Error> {
         // Acquire a slot for the reply.
@@ -528,8 +544,7 @@ impl core::fmt::Display for DuplexStreamClosed {
     }
 }
 
-impl<W, Framer, Codec, const N: usize, const BUF: usize, Req, Resp>
-    ServerTransport<Req, Resp>
+impl<W, Framer, Codec, const N: usize, const BUF: usize, Req, Resp> ServerTransport<Req, Resp>
     for DuplexServerHalf<W, Framer, Codec, N, BUF, Req, Resp>
 where
     W: AsyncBytesWrite,
@@ -540,10 +555,8 @@ where
     <Framer as FrameWriter>::Error<W::Error>: core::fmt::Debug,
     <Codec as Encoder>::Error: core::fmt::Debug,
 {
-    type Error = DuplexServerError<
-        <Framer as FrameWriter>::Error<W::Error>,
-        <Codec as Encoder>::Error,
-    >;
+    type Error =
+        DuplexServerError<<Framer as FrameWriter>::Error<W::Error>, <Codec as Encoder>::Error>;
     type ReplyToken = MuxedReplyToken;
 
     async fn recv(&mut self) -> Result<(Req, Self::ReplyToken), Self::Error> {
@@ -583,9 +596,7 @@ pub enum DuplexServerError<F, C> {
     Closed,
 }
 
-impl<F: core::fmt::Display, C: core::fmt::Display> core::fmt::Display
-    for DuplexServerError<F, C>
-{
+impl<F: core::fmt::Display, C: core::fmt::Display> core::fmt::Display for DuplexServerError<F, C> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             DuplexServerError::Framing(e) => write!(f, "{e}"),
@@ -609,8 +620,7 @@ mod tests {
         futures_lite::future::block_on(fut)
     }
 
-    type DxT<R, W> =
-        DuplexStreamTransport<R, W, LengthPrefixed, PostcardCodec, 4, 256>;
+    type DxT<R, W> = DuplexStreamTransport<R, W, LengthPrefixed, PostcardCodec, 4, 256>;
 
     const PING_API: u16 = 0x0001;
     const ECHO_API: u16 = 0x0002;
@@ -684,12 +694,9 @@ mod tests {
 
             // Race work against pumps; pumps never complete normally
             // (they block reading), so `or` returns once `work` finishes.
-            futures_lite::future::or(
-                work,
-                async {
-                    let _ = futures_lite::future::zip(pump_a_fut, pump_b_fut).await;
-                },
-            )
+            futures_lite::future::or(work, async {
+                let _ = futures_lite::future::zip(pump_a_fut, pump_b_fut).await;
+            })
             .await;
         });
     }

@@ -171,7 +171,7 @@ pub use myelin_macros::service;
 // Macros and items live in separate namespaces, so the two `paste` names
 // coexist without conflict.
 #[doc(hidden)]
-pub use ::paste as paste;
+pub use ::paste;
 #[doc(hidden)]
 pub use ::paste::paste;
 

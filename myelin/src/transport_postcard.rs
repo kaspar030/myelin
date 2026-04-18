@@ -42,8 +42,7 @@ pub type PostcardStream<R, W, Incoming, Outgoing> = StreamTransport<
 ///
 /// Alias for [`StreamTransportError`] specialized to length-prefix framing
 /// (over `std::io::Error`) and postcard encoding errors.
-pub type PostcardStreamError =
-    StreamTransportError<FramingError<std::io::Error>, postcard::Error>;
+pub type PostcardStreamError = StreamTransportError<FramingError<std::io::Error>, postcard::Error>;
 
 /// Reply token for PostcardStream — just a marker, reply goes to the same stream.
 pub type PostcardReplyToken = StreamReplyToken<Sequential>;

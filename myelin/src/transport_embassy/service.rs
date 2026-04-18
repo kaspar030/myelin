@@ -14,6 +14,14 @@ pub struct EmbassyService<M: RawMutex + 'static, Req, Resp: 'static, const CHANN
     pub(crate) requests: Channel<M, (Req, &'static Signal<M, Resp>), CHANNEL_DEPTH>,
 }
 
+impl<M: RawMutex + 'static, Req, Resp: 'static, const CHANNEL_DEPTH: usize> Default
+    for EmbassyService<M, Req, Resp, CHANNEL_DEPTH>
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<M: RawMutex + 'static, Req, Resp: 'static, const CHANNEL_DEPTH: usize>
     EmbassyService<M, Req, Resp, CHANNEL_DEPTH>
 {

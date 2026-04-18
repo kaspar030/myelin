@@ -17,9 +17,9 @@
 // resulting cfg-check warning inside this in-crate test.
 #![allow(unexpected_cfgs)]
 
-use myelin::transport::{ClientTransport, ServerTransport};
-use myelin::BlockOn;
 use core::convert::Infallible;
+use myelin::BlockOn;
+use myelin::transport::{ClientTransport, ServerTransport};
 
 #[myelin::service]
 pub trait GreeterService {
@@ -140,10 +140,7 @@ impl FakeClientTransport {
 impl ClientTransport<GreeterRequest, GreeterResponse> for FakeClientTransport {
     type Error = Infallible;
 
-    async fn call(
-        &self,
-        _req: GreeterRequest,
-    ) -> Result<GreeterResponse, Self::Error> {
+    async fn call(&self, _req: GreeterRequest) -> Result<GreeterResponse, Self::Error> {
         Ok(self.next_response.lock().unwrap().take().unwrap())
     }
 }

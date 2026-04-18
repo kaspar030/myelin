@@ -5,9 +5,8 @@
 //! - `testing-stdio` — spawns both server types and acts as a client for each
 
 use testing_service::{
-    GreeterRequest, GreeterResponse, GreeterServiceSync, greeter_serve_sync,
-    MathServiceSync,
-    CombinedRequest, CombinedResponse, combined_serve_sync,
+    CombinedRequest, CombinedResponse, GreeterRequest, GreeterResponse, GreeterServiceSync,
+    MathServiceSync, combined_serve_sync, greeter_serve_sync,
 };
 
 // -- Service implementations --
@@ -71,7 +70,10 @@ fn run_greeter_server() {
     eprintln!("[server] starting greeter on stdio");
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
-    let mut transport = myelin::transport_postcard::new_postcard_stream::<_, _, GreeterRequest, GreeterResponse>(stdin, stdout);
+    let mut transport =
+        myelin::transport_postcard::new_postcard_stream::<_, _, GreeterRequest, GreeterResponse>(
+            stdin, stdout,
+        );
     let svc = GreeterImpl;
     let _ = greeter_serve_sync(&svc, &mut transport, &SyncBlockOn);
     eprintln!("[server] greeter done");
@@ -81,7 +83,10 @@ fn run_combined_server() {
     eprintln!("[server] starting combined on stdio");
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
-    let mut transport = myelin::transport_postcard::new_postcard_stream::<_, _, CombinedRequest, CombinedResponse>(stdin, stdout);
+    let mut transport =
+        myelin::transport_postcard::new_postcard_stream::<_, _, CombinedRequest, CombinedResponse>(
+            stdin, stdout,
+        );
     let svc = CombinedImpl;
     let _ = combined_serve_sync(&svc, &mut transport, &SyncBlockOn);
     eprintln!("[server] combined done");
@@ -105,7 +110,10 @@ fn run_greeter_client() {
     let child_stdout = child.stdout.take().unwrap();
 
     let transport =
-        myelin::transport_postcard::new_postcard_stream::<_, _, GreeterResponse, GreeterRequest>(child_stdout, child_stdin);
+        myelin::transport_postcard::new_postcard_stream::<_, _, GreeterResponse, GreeterRequest>(
+            child_stdout,
+            child_stdin,
+        );
     let client = testing_service::GreeterClientSync::new(
         testing_service::GreeterClient::new(transport),
         SyncBlockOn,
@@ -140,14 +148,20 @@ fn run_combined_client() {
     let child_stdout = child.stdout.take().unwrap();
 
     let transport =
-        myelin::transport_postcard::new_postcard_stream::<_, _, CombinedResponse, CombinedRequest>(child_stdout, child_stdin);
+        myelin::transport_postcard::new_postcard_stream::<_, _, CombinedResponse, CombinedRequest>(
+            child_stdout,
+            child_stdin,
+        );
     let client = testing_service::CombinedClientSync::new(
         testing_service::CombinedClient::new(transport),
         SyncBlockOn,
     );
 
     // Test greeter sub-service
-    let greeting = client.greeter().greet("stdio".to_string()).expect("greet failed");
+    let greeting = client
+        .greeter()
+        .greet("stdio".to_string())
+        .expect("greet failed");
     println!("[client] {greeting}");
 
     let healthy = client.greeter().health().expect("health failed");

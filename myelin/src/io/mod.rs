@@ -25,8 +25,8 @@
 
 use core::future::Future;
 
-pub mod local_lock;
 pub mod blocking;
+pub mod local_lock;
 
 #[cfg(any(test, feature = "io-test-utils"))]
 pub mod cursor;
@@ -40,8 +40,8 @@ pub mod futures_io;
 #[cfg(feature = "tokio-io")]
 pub mod tokio_io;
 
-pub use local_lock::LocalLock;
 pub use blocking::BlockingIo;
+pub use local_lock::LocalLock;
 
 /// An asynchronous byte-stream reader.
 ///
@@ -55,8 +55,7 @@ pub trait AsyncBytesRead {
     /// Read exactly `buf.len()` bytes into `buf`.
     ///
     /// Returns `Err` if EOF is reached before the buffer is filled.
-    fn read_exact(&mut self, buf: &mut [u8])
-        -> impl Future<Output = Result<(), Self::Error>>;
+    fn read_exact(&mut self, buf: &mut [u8]) -> impl Future<Output = Result<(), Self::Error>>;
 }
 
 /// An asynchronous byte-stream writer.
@@ -65,8 +64,7 @@ pub trait AsyncBytesWrite {
     type Error;
 
     /// Write all of `buf` to the underlying stream.
-    fn write_all(&mut self, buf: &[u8])
-        -> impl Future<Output = Result<(), Self::Error>>;
+    fn write_all(&mut self, buf: &[u8]) -> impl Future<Output = Result<(), Self::Error>>;
 
     /// Flush any buffered bytes to the underlying stream.
     fn flush(&mut self) -> impl Future<Output = Result<(), Self::Error>>;
@@ -77,9 +75,7 @@ pub trait AsyncBytesWrite {
 impl<T: AsyncBytesRead + ?Sized> AsyncBytesRead for &mut T {
     type Error = T::Error;
 
-    fn read_exact(&mut self, buf: &mut [u8])
-        -> impl Future<Output = Result<(), Self::Error>>
-    {
+    fn read_exact(&mut self, buf: &mut [u8]) -> impl Future<Output = Result<(), Self::Error>> {
         (**self).read_exact(buf)
     }
 }
@@ -87,9 +83,7 @@ impl<T: AsyncBytesRead + ?Sized> AsyncBytesRead for &mut T {
 impl<T: AsyncBytesWrite + ?Sized> AsyncBytesWrite for &mut T {
     type Error = T::Error;
 
-    fn write_all(&mut self, buf: &[u8])
-        -> impl Future<Output = Result<(), Self::Error>>
-    {
+    fn write_all(&mut self, buf: &[u8]) -> impl Future<Output = Result<(), Self::Error>> {
         (**self).write_all(buf)
     }
 

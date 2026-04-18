@@ -53,12 +53,10 @@ impl<'a, M: RawMutex + 'static, Req, Resp: 'static, const CHANNEL_DEPTH: usize>
         // SAFETY: The caller guarantees this client lives in `'static` storage
         // (e.g., StaticCell). We block on wait() below, so the client cannot
         // be dropped while in-flight.
-        let signal_ref: &'static Signal<M, Resp> =
-            unsafe { &*core::ptr::from_ref(&self.reply) };
+        let signal_ref: &'static Signal<M, Resp> = unsafe { &*core::ptr::from_ref(&self.reply) };
 
         self.sender.send((req, signal_ref)).await;
         let resp = self.reply.wait().await;
         Ok(resp)
     }
 }
-
