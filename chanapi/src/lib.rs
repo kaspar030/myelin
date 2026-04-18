@@ -17,9 +17,79 @@
 //!
 //! Implementations:
 //! - `transport_tokio` (feature `tokio`) — tokio mpsc + oneshot, local, no serialization.
+//! - `transport_smol` (feature `smol`) — async-channel mpsc + bounded(1) reply
+//!   channel, local, no serialization.
 //! - `transport_embassy` (feature `embassy`) — embassy static channels + signals.
 //! - `transport_postcard` (feature `postcard`) — postcard serialization over any
-//!   `Read + Write` stream, length-prefix framing.
+//!   sync `Read + Write` stream, length-prefix framing. Internally wraps
+//!   the sync I/O in [`io::BlockingIo`] so the async transport stack runs
+//!   each read/write inline — suitable for stdio-style binaries driven
+//!   by a trivial [`BlockOn`].
+//!
+//! ## Async I/O
+//!
+//! The stream transport ([`stream::StreamTransport`]) operates on
+//! [`io::AsyncBytesRead`] / [`io::AsyncBytesWrite`] — chanapi's own
+//! runtime-neutral async byte-stream traits (just `read_exact`,
+//! `write_all`, `flush`). Bring your own reader/writer by implementing
+//! those traits, or use one of the feature-gated adapters:
+//!
+//! - [`io::BlockingIo`] — wrap any sync `std::io::Read`/`Write`. The
+//!   async methods resolve inline; used by `transport_postcard` for
+//!   stdio transport.
+//! - [`io::futures_io`] (feature `futures-io`) — adapt any type bounded
+//!   by `futures_io::AsyncRead` / `AsyncWrite`. Covers smol's
+//!   `smol::Async<T>`, async-std, and anything in the futures-io
+//!   ecosystem.
+//! - [`io::tokio_io`] (feature `tokio-io`) — adapt `tokio::io::AsyncRead`
+//!   / `AsyncWrite`. Independent of the `tokio` feature (channels-only
+//!   transport).
+//!
+//! Inside chanapi core, shared access to a reader/writer between
+//! concurrent async tasks is mediated by a small single-waiter async
+//! mutex, [`io::LocalLock`]. It replaces the old `RefCell`-based
+//! scheme (unsound across `.await`) and is cancel-safe.
+//!
+//! ## Duplex transport
+//!
+//! For peers that both call *and* serve over one byte stream, use
+//! [`stream::DuplexStreamTransport`]. It owns one `(reader, writer)`
+//! pair and vends:
+//!
+//! - [`stream::DuplexClientHalf`] — `impl ClientTransport` per API
+//!   that this peer calls into.
+//! - [`stream::DuplexServerHalf`] — `impl ServerTransport` per API
+//!   that this peer serves.
+//! - [`stream::DuplexPump`] — a `run()` future the user's runtime
+//!   spawns; it drives the reader and demultiplexes frames into
+//!   either the slot router (responses) or a per-api_id server inbox
+//!   (requests).
+//!
+//! Wire format inside each framed payload: `[u8 kind][u16 api_id LE]
+//! [u8 slot_id][codec bytes]`. `kind` is `0` (request) or `1`
+//! (response); `api_id` identifies the API; `slot_id` is the caller's
+//! echo-back value. See [`stream::duplex`] for details.
+//!
+//! Example (sketch, full example in `tests/duplex_smol_integration.rs`):
+//!
+//! ```ignore
+//! use chanapi::io::futures_io::{FuturesIoReader, FuturesIoWriter};
+//! use chanapi::stream::{DuplexStreamTransport, LengthPrefixed, PostcardCodec};
+//!
+//! type Dx<R, W> = DuplexStreamTransport<R, W, LengthPrefixed, PostcardCodec, 8, 512>;
+//!
+//! # fn main() {
+//! # let (r, w): (FuturesIoReader<smol::io::Empty>, FuturesIoWriter<smol::io::Sink>) = panic!();
+//! let dx: Dx<_, _> = Dx::new(r, w);
+//! let server = dx.server_half::<u32, u32>(0x0001);
+//! let client = dx.client_half::<u32, u32>(0x0002);
+//! let (pump, _handle) = dx.split();
+//! smol::block_on(async {
+//!     // Run pump concurrently with your server loop and client calls.
+//!     let _ = futures_lite::future::zip(pump.run(), async { /* ... */ }).await;
+//! });
+//! # }
+//! ```
 //!
 //! ## Cancel Safety
 //!

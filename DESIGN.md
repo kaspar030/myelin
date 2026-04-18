@@ -54,6 +54,45 @@ Slot index as request ID + fixed-size array of reply slots (no slotmap crate nee
 
 Atomic bitmap for slot allocation, same pattern as original embassy transport. Max concurrent requests is a const generic.
 
+## Async I/O
+
+The stream stack is genuinely async. chanapi owns two minimal traits,
+`io::AsyncBytesRead` and `io::AsyncBytesWrite`, with just `read_exact`,
+`write_all`, and `flush`. Core chanapi depends on neither `tokio` nor
+`futures` — runtime adapters live behind feature flags:
+
+- `BlockingIo` wraps `std::io::Read`/`Write` (no-`await` inline ops).
+- `io::futures_io` (feature `futures-io`) adapts `futures_io::AsyncRead`/
+  `AsyncWrite` — covers smol, async-std, etc.
+- `io::tokio_io` (feature `tokio-io`) adapts tokio's AsyncRead/Write.
+
+Shared access to a reader/writer between concurrent async tasks inside
+a single transport goes through `io::LocalLock` — a zero-dep
+single-waiter async mutex (AtomicWaker + AtomicBool). Replaces the old
+`RefCell`-based scheme which was unsound across `.await`.
+
+## Duplex Stream Transport
+
+`DuplexStreamTransport` lets one peer both call *and* serve over the
+same byte stream. A pump future (spawned by the user's runtime) owns
+the reader and demultiplexes incoming frames. Registered server halves
+receive their requests via per-`api_id` inboxes; outgoing calls are
+matched to responses via a shared `MuxedSlots` router.
+
+Wire format (inside each length-prefixed frame):
+
+```
+[u8 kind][u16 api_id LE][u8 slot_id][codec bytes]
+```
+
+- `kind = 0` → request (from sender to peer's registered server).
+- `kind = 1` → response (echoes back the caller's `slot_id`).
+
+This is a **new wire format**, distinct from and incompatible with the
+single-direction `StreamTransport + MuxedSlots` format (which uses
+just `[u8 slot_id][payload]`). The one-way stream transport stays as
+is; duplex is chosen explicitly at the call site.
+
 ## Cancel Safety
 
 - Cancelling a client call is always safe (no corruption, no leaks)
