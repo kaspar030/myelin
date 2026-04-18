@@ -18,12 +18,18 @@
 //!   (1-byte slot ID per frame).
 
 pub mod codec;
+pub mod duplex;
 pub mod framing;
 pub mod mux;
 pub mod routing;
 pub mod transport;
 
 pub use codec::{Decoder, Encoder, PostcardCodec};
+pub use duplex::{
+    DUPLEX_HEADER_LEN, DuplexClientHalf, DuplexFrameError, DuplexHandle, DuplexHeader,
+    DuplexPump, DuplexPumpError, DuplexServerError, DuplexServerHalf, DuplexStreamTransport,
+    KIND_REQUEST, KIND_RESPONSE, encode_duplex_frame, parse_duplex_frame,
+};
 pub use framing::{FrameReader, FrameWriter, FramingError, LengthPrefixed};
 pub use routing::{
     MuxedReplyToken, MuxedSlotGuard, MuxedSlots, MuxedSlots4, MuxedSlots8, ReplyRouter,
