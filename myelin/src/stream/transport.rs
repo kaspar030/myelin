@@ -403,7 +403,7 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "postcard"))]
 mod tests {
     use super::*;
     use crate::io::cursor::{cursor_read, cursor_write};

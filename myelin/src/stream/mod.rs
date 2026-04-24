@@ -24,7 +24,13 @@ pub mod mux;
 pub mod routing;
 pub mod transport;
 
-pub use codec::{Decoder, Encoder, PostcardCodec};
+pub use codec::{Decoder, Encoder};
+#[cfg(feature = "cbor")]
+pub use codec::CborCodec;
+#[cfg(feature = "cbor")]
+pub use codec::CborCodecError;
+#[cfg(feature = "postcard")]
+pub use codec::PostcardCodec;
 pub use duplex::{
     DUPLEX_HEADER_LEN, DuplexClientHalf, DuplexFrameError, DuplexHandle, DuplexHeader, DuplexPump,
     DuplexPumpError, DuplexServerError, DuplexServerHalf, DuplexStreamTransport, KIND_REQUEST,

@@ -40,9 +40,19 @@ This generates `GreeterClient`, `GreeterRequest`/`GreeterResponse` enums,
 | Embassy (static Channel + Signal) | `embassy` | Embedded, `no_std` |
 | Smol (async-channel) | `smol` | In-process, smol async |
 | Postcard stream | `postcard` | Cross-process, serialized (stdio/TCP/UART) |
+| CBOR stream | `cbor` | Cross-process, self-describing (nitro bus, nbusctl tail) |
 
 ## Unreleased
 
+- `stream::codec`: add `CborCodec` alongside `PostcardCodec`, gated on
+  the new `cbor` Cargo feature (off by default, pulls in
+  `minicbor-serde`). Produces a self-describing wire format suitable
+  for debuggable IPC buses (e.g. nitro's `nbus` / `nbusctl tail`).
+  Postcard remains the default; the new codec is additive and slots
+  into `StreamTransport` / `DuplexStreamTransport` unchanged through
+  `CborCodecError`, which unifies `minicbor-serde`'s distinct
+  encode/decode error types (the transport requires
+  `Encoder::Error == Decoder::Error`).
 - `stream::routing`: add `MuxedSlots::new_boxed() -> Box<Self>`, which
   constructs the `N × BUF` slot array directly in a heap allocation.
   The existing `MuxedSlots::new()` builds the slot array on the stack

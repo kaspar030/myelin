@@ -615,7 +615,7 @@ impl<F: core::fmt::Display, C: core::fmt::Display> core::fmt::Display for Duplex
 // Tests
 // =========================================================================
 
-#[cfg(test)]
+#[cfg(all(test, feature = "postcard"))]
 mod tests {
     use super::*;
     use crate::io::mem_pipe::duplex;

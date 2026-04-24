@@ -17,6 +17,8 @@ tokio = ["std", "dep:tokio", "myelin-macros/tokio"]
 tokio-io = ["std", "dep:tokio", "tokio/io-util"]
 embassy = ["dep:embassy-sync", "dep:static_cell", "myelin-macros/embassy"]
 postcard = ["std", "dep:postcard", "dep:serde"]
+# CBOR codec over any stream (self-describing, debuggable wire format).
+cbor = ["std", "dep:minicbor-serde", "dep:serde", "minicbor-serde/std"]
 # Async I/O adapter over `futures_io::AsyncRead`/`AsyncWrite`.
 futures-io = ["std", "dep:futures-io"]
 # Local `smol`-compatible transport using `async-channel`.
@@ -31,6 +33,7 @@ tokio = { version = "1", features = ["sync"], optional = true }
 embassy-sync = { version = "0.7", optional = true }
 paste = "1"
 postcard = { version = "1", features = ["use-std"], optional = true }
+minicbor-serde = { version = "0.6", optional = true, default-features = false }
 serde = { version = "1", optional = true }
 static_cell = { version = "2", default-features = false, optional = true }
 futures-io = { version = "0.3", optional = true, default-features = false, features = ["std"] }
@@ -40,4 +43,5 @@ futures-lite = { version = "2", optional = true, default-features = false, featu
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "sync", "io-util", "net"] }
 futures-lite = { version = "2", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
 smol = "2"

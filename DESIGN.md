@@ -5,7 +5,7 @@
 Stream transports (postcard over TCP, JSON over websocket, etc.) should decompose into three composable layers:
 
 1. **Framing** — how bytes are chunked: `LengthPrefixed`, `COBS`, `WebSocketFramer`
-2. **Encoding** — how types become bytes: `PostcardCodec`, `JsonCodec`, `ZerocopyCodec`
+2. **Encoding** — how types become bytes: `PostcardCodec`, `CborCodec`, `JsonCodec`, `ZerocopyCodec`
 3. **Reply Routing** — how responses get back to callers: `Sequential`, `MuxedSlots<N>`, `MuxedOneshot`
 
 A `StreamTransport<Framer, Codec, Router>` composes them and implements `ClientTransport`/`ServerTransport`.

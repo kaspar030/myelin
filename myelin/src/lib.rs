@@ -142,7 +142,7 @@ pub mod transport_tokio;
 #[cfg(feature = "embassy")]
 pub mod transport_embassy;
 
-#[cfg(feature = "postcard")]
+#[cfg(any(feature = "postcard", feature = "cbor"))]
 pub mod stream;
 
 #[cfg(feature = "postcard")]
