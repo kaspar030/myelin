@@ -180,18 +180,22 @@ fn serve_sync_fn_ident(stem: &Ident) -> Ident {
     Ident::new(&format!("{snake}_serve_sync"), stem.span())
 }
 
+#[cfg(feature = "tokio")]
 fn tokio_service_ident(stem: &Ident) -> Ident {
     Ident::new(&format!("{stem}TokioService"), stem.span())
 }
 
+#[cfg(feature = "embassy")]
 fn embassy_service_ident(stem: &Ident) -> Ident {
     Ident::new(&format!("{stem}EmbassyService"), stem.span())
 }
 
+#[cfg(feature = "embassy")]
 fn embassy_client_transport_ident(stem: &Ident) -> Ident {
     Ident::new(&format!("{stem}EmbassyClientTransport"), stem.span())
 }
 
+#[cfg(feature = "embassy")]
 fn embassy_macro_ident(stem: &Ident) -> Ident {
     let snake = stem_snake(stem);
     Ident::new(&format!("{snake}_embassy_service"), stem.span())
@@ -202,6 +206,7 @@ fn stem_upper(stem: &Ident) -> Ident {
     Ident::new(&upper, stem.span())
 }
 
+#[cfg(feature = "embassy")]
 fn embassy_static_prefix_ident(stem: &Ident) -> Ident {
     // Prefix used inside the paste!-concatenated static ident:
     // `[< __{STEM_UPPER}_SERVICE_ $name:upper >]`.
@@ -486,50 +491,66 @@ pub fn serve_sync_fn(svc: &ServiceTrait) -> TokenStream {
 // =============================================================================
 // Transport convenience aliases (item 7)
 // =============================================================================
+//
+// The emitted tokens carry **no** `#[cfg]` attributes. Whether these items
+// appear in a given expansion is decided at proc-macro build time by
+// `myelin-macros`'s own `embassy`/`tokio` features, which `myelin` forwards
+// from its own `embassy`/`tokio` features. This keeps emission and module
+// availability in lockstep via Cargo feature unification, and stops the
+// generated code from leaking cfg names into downstream manifests.
 
-/// Emit per-transport type aliases:
+/// Emit the tokio transport type alias:
 ///
 /// ```ignore
-/// #[cfg(feature = "tokio")]
 /// pub type {Stem}TokioService =
 ///     ::myelin::transport_tokio::TokioService<{Stem}Request, {Stem}Response>;
+/// ```
 ///
-/// #[cfg(feature = "embassy")]
+/// The output carries no `#[cfg]` attribute; this function only exists when
+/// `myelin-macros` is built with its own `tokio` feature. The caller in
+/// `lib.rs` is feature-gated to match, so no alias is emitted when the
+/// feature is off.
+#[cfg(feature = "tokio")]
+pub fn tokio_transport_alias(svc: &ServiceTrait) -> TokenStream {
+    let vis = &svc.vis;
+    let req = request_enum_ident(&svc.stem);
+    let resp = response_enum_ident(&svc.stem);
+    let tokio_alias = tokio_service_ident(&svc.stem);
+
+    quote! {
+        #vis type #tokio_alias =
+            ::myelin::transport_tokio::TokioService<#req, #resp>;
+    }
+}
+
+/// Emit the embassy transport type aliases:
+///
+/// ```ignore
 /// pub type {Stem}EmbassyService<M, const CHANNEL_DEPTH: usize> =
 ///     ::myelin::transport_embassy::EmbassyService<
 ///         M, {Stem}Request, {Stem}Response, CHANNEL_DEPTH,
 ///     >;
 ///
-/// #[cfg(feature = "embassy")]
 /// pub type {Stem}EmbassyClientTransport<'a, M, const CHANNEL_DEPTH: usize> =
 ///     ::myelin::transport_embassy::EmbassyClient<
 ///         'a, M, {Stem}Request, {Stem}Response, CHANNEL_DEPTH,
 ///     >;
 /// ```
 ///
-/// The `#[cfg(feature = "...")]` attributes refer to features of the
-/// *consuming* crate, not of `myelin-macros`. The consumer is expected to
-/// forward those features to `myelin`'s matching features (typically via
-/// `tokio = ["myelin/tokio"]` / `embassy = ["myelin/embassy"]`).
-pub fn transport_aliases(svc: &ServiceTrait) -> TokenStream {
+/// The output carries no `#[cfg]` attribute; this function only exists when
+/// `myelin-macros` is built with its own `embassy` feature.
+#[cfg(feature = "embassy")]
+pub fn embassy_transport_aliases(svc: &ServiceTrait) -> TokenStream {
     let vis = &svc.vis;
     let req = request_enum_ident(&svc.stem);
     let resp = response_enum_ident(&svc.stem);
-
-    let tokio_alias = tokio_service_ident(&svc.stem);
     let embassy_svc = embassy_service_ident(&svc.stem);
     let embassy_cli = embassy_client_transport_ident(&svc.stem);
 
     quote! {
-        #[cfg(feature = "tokio")]
-        #vis type #tokio_alias =
-            ::myelin::transport_tokio::TokioService<#req, #resp>;
-
-        #[cfg(feature = "embassy")]
         #vis type #embassy_svc<M, const CHANNEL_DEPTH: usize> =
             ::myelin::transport_embassy::EmbassyService<M, #req, #resp, CHANNEL_DEPTH>;
 
-        #[cfg(feature = "embassy")]
         #vis type #embassy_cli<'a, M, const CHANNEL_DEPTH: usize> =
             ::myelin::transport_embassy::EmbassyClient<'a, M, #req, #resp, CHANNEL_DEPTH>;
     }
@@ -539,8 +560,11 @@ pub fn transport_aliases(svc: &ServiceTrait) -> TokenStream {
 // Embassy instantiation `macro_rules!` (item 8)
 // =============================================================================
 
-/// Emit a `#[macro_export] macro_rules! {stem_snake}_embassy_service` under
-/// `#[cfg(feature = "embassy")]`.
+/// Emit a `#[macro_export] macro_rules! {stem_snake}_embassy_service`.
+///
+/// The output carries no `#[cfg]` attribute; this function only exists when
+/// `myelin-macros` is built with its own `embassy` feature. The caller in
+/// `lib.rs` is feature-gated to match.
 ///
 /// Matches `testing-service`'s hand-written version in shape, but with
 /// stem-derived idents (`{Stem}Client`, `{Stem}ClientSync`, `{Stem}Request`,
@@ -551,7 +575,6 @@ pub fn transport_aliases(svc: &ServiceTrait) -> TokenStream {
 /// Generated shape:
 ///
 /// ```ignore
-/// #[cfg(feature = "embassy")]
 /// #[macro_export]
 /// macro_rules! {stem_snake}_embassy_service {
 ///     ($name:ident, $mutex:ty, $depth:expr) => {
@@ -602,6 +625,7 @@ pub fn transport_aliases(svc: &ServiceTrait) -> TokenStream {
 /// `quote!` uses `#var` for interpolation and leaves `$` untouched, so
 /// literal `$name` / `$mutex` / `$depth` / `$block_on` in the body pass
 /// through verbatim to the emitted `macro_rules!`.
+#[cfg(feature = "embassy")]
 pub fn embassy_instantiation(svc: &ServiceTrait) -> TokenStream {
     let stem = &svc.stem;
     let macro_ident = embassy_macro_ident(stem);
@@ -612,7 +636,6 @@ pub fn embassy_instantiation(svc: &ServiceTrait) -> TokenStream {
     let static_prefix = embassy_static_prefix_ident(stem);
 
     quote! {
-        #[cfg(feature = "embassy")]
         #[macro_export]
         macro_rules! #macro_ident {
             ($name:ident, $mutex:ty, $depth:expr) => {

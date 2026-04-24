@@ -83,3 +83,40 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo run -p testing-stdio
+
+  # Guard against regressions of the `#[myelin::service]` macro emitting
+  # `#[cfg(feature = "tokio"/"embassy")]` into destination crates. A
+  # downstream crate that doesn't declare those features must build with
+  # `-D warnings` and produce no `unexpected_cfgs` warnings for tokio/embassy.
+  cfg-hygiene:
+    name: cfg hygiene (downstream)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p testing-service --no-default-features
+
+  # Exercise the proc-macro unit/trybuild tests with its transport features
+  # toggled on explicitly. `cargo test --workspace` already covers the
+  # features-on configuration via workspace unification; this job pins it.
+  macros-features:
+    name: myelin-macros (features)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - ""
+          - "embassy"
+          - "tokio"
+          - "embassy,tokio"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macros-${{ matrix.features }}
+      - run: cargo test -p myelin-macros --features "${{ matrix.features }}"

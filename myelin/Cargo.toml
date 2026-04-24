@@ -12,10 +12,10 @@ readme = "../README.md"
 [features]
 default = []
 std = []
-tokio = ["std", "dep:tokio"]
+tokio = ["std", "dep:tokio", "myelin-macros/tokio"]
 # Async I/O adapter over `tokio::io::AsyncRead`/`AsyncWrite`.
 tokio-io = ["std", "dep:tokio", "tokio/io-util"]
-embassy = ["dep:embassy-sync", "dep:static_cell"]
+embassy = ["dep:embassy-sync", "dep:static_cell", "myelin-macros/embassy"]
 postcard = ["std", "dep:postcard", "dep:serde"]
 # Async I/O adapter over `futures_io::AsyncRead`/`AsyncWrite`.
 futures-io = ["std", "dep:futures-io"]

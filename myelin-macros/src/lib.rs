@@ -69,15 +69,22 @@ use quote::quote;
 ///    invoke the corresponding service trait method, returning a response.
 /// 8. `{stem}_serve` / `{stem}_serve_sync` — `recv → dispatch → reply` loops
 ///    over a `ServerTransport`.
-/// 9. Transport convenience type aliases, gated on the **consuming crate's**
-///    features (`#[cfg(feature = "tokio")]` / `#[cfg(feature = "embassy")]`):
+/// 9. Transport convenience type aliases, emitted unconditionally in the
+///    output (no `#[cfg]` attributes). Whether they appear at all is
+///    decided at proc-macro build time by `myelin-macros`'s own
+///    `tokio`/`embassy` features — `myelin` forwards its own
+///    `tokio`/`embassy` features to these, so Cargo's per-package feature
+///    unification keeps the emission and the supporting transport modules
+///    in `myelin` in lockstep.
 ///    - `{Stem}TokioService` — `TokioService<{Stem}Request, {Stem}Response>`
 ///    - `{Stem}EmbassyService<M, const CHANNEL_DEPTH: usize>`
 ///    - `{Stem}EmbassyClientTransport<'a, M, const CHANNEL_DEPTH: usize>`
-/// 10. `{stem}_embassy_service!` — a `#[macro_export] macro_rules!` gated on
-///     `#[cfg(feature = "embassy")]` that instantiates a static embassy
-///     service plus three nested `*_client!` / `*_server!` / `*_client_sync!`
-///     helper macros. Takes `($name:ident, $mutex:ty, $depth:expr)`.
+/// 10. `{stem}_embassy_service!` — a `#[macro_export] macro_rules!` that
+///     instantiates a static embassy service plus three nested
+///     `*_client!` / `*_server!` / `*_client_sync!` helper macros. Takes
+///     `($name:ident, $mutex:ty, $depth:expr)`. Like item 9, this is
+///     emitted unconditionally in the output when the `embassy` feature of
+///     `myelin-macros` itself is on (i.e. when `myelin/embassy` is on).
 /// 11. `{STEM_UPPER}_API_ID: u16` — wire-level API identifier. Defaults to a
 ///     16-bit FNV-1a hash of the trait ident; override with
 ///     `#[myelin::service(api_id = 0x1234)]`. Since the id space is only
@@ -92,24 +99,23 @@ use quote::quote;
 /// `serde::Deserialize` when the downstream crate's `serde` feature is
 /// enabled.
 ///
-/// # Consumer crate feature conventions
+/// # Transport feature gating
 ///
-/// Items 9 and 10 are gated on `feature = "tokio"` / `feature = "embassy"`
-/// of the *consuming* crate (not of `myelin-macros`). The emitted
-/// `#[cfg(feature = "...")]` attributes are literal — consumers must declare
-/// matching features, typically forwarding to `myelin`'s own features:
-///
-/// ```toml
-/// [features]
-/// tokio   = ["myelin/tokio"]
-/// embassy = ["myelin/embassy"]
-/// ```
+/// Items 9 and 10 carry **no** `#[cfg]` attributes in the emitted tokens.
+/// Their presence is controlled entirely at proc-macro build time via
+/// `myelin-macros`'s own `tokio`/`embassy` features. In the supported
+/// usage pattern (depend on `myelin`, invoke `#[myelin::service]` via the
+/// re-export), enabling `myelin/tokio` or `myelin/embassy` automatically
+/// flips the matching `myelin-macros` feature through Cargo's feature
+/// forwards, so the emitted aliases / `macro_rules!` appear exactly when
+/// the supporting `::myelin::transport_tokio` / `::myelin::transport_embassy`
+/// modules are available. Downstream crates therefore do **not** need to
+/// declare `tokio` / `embassy` features of their own.
 ///
 /// The embassy instantiation `macro_rules!` refers to `::myelin::paste` and
 /// `::myelin::static_cell` by absolute path. `myelin` re-exports `paste`
 /// unconditionally and `static_cell` under its own `embassy` feature, so no
-/// additional consumer-side wiring is required beyond the feature forwards
-/// above.
+/// additional consumer-side wiring is required.
 ///
 /// # Input constraints
 ///
@@ -154,8 +160,27 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
             let dispatch_sync = emit::dispatch_sync_fn(&svc);
             let serve = emit::serve_fn(&svc);
             let serve_sync = emit::serve_sync_fn(&svc);
-            let aliases = emit::transport_aliases(&svc);
+
+            // Transport aliases / instantiation macros are gated on
+            // `myelin-macros`'s own `tokio`/`embassy` features so the
+            // emitted tokens don't carry `#[cfg]` attributes (see the
+            // docstring above). When the feature is off, substitute an
+            // empty `TokenStream`.
+            #[cfg(feature = "tokio")]
+            let tokio_alias = emit::tokio_transport_alias(&svc);
+            #[cfg(not(feature = "tokio"))]
+            let tokio_alias = quote! {};
+
+            #[cfg(feature = "embassy")]
+            let embassy_aliases = emit::embassy_transport_aliases(&svc);
+            #[cfg(not(feature = "embassy"))]
+            let embassy_aliases = quote! {};
+
+            #[cfg(feature = "embassy")]
             let embassy_instantiation = emit::embassy_instantiation(&svc);
+            #[cfg(not(feature = "embassy"))]
+            let embassy_instantiation = quote! {};
+
             let api_id = emit::api_id_const(&svc, args.api_id);
             quote! {
                 #req
@@ -168,7 +193,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #dispatch_sync
                 #serve
                 #serve_sync
-                #aliases
+                #tokio_alias
+                #embassy_aliases
                 #embassy_instantiation
                 #api_id
             }
@@ -791,65 +817,96 @@ mod tests {
 
     // =========================================================================
     // Transport aliases (item 7).
+    //
+    // The new emit functions (`tokio_transport_alias` /
+    // `embassy_transport_aliases`) only exist when `myelin-macros` is built
+    // with its own matching feature, so the tests live inside feature-gated
+    // submodules.
     // =========================================================================
 
-    #[test]
-    fn transport_aliases_shape() {
-        let svc = greeter();
-        let got = canon(emit::transport_aliases(&svc));
-        // tokio alias under `feature = "tokio"` cfg
-        assert!(got.contains("# [cfg (feature = \"tokio\")]"), "got: {got}");
-        assert!(
-            got.contains(
-                "pub type GreeterTokioService = \
-                 :: myelin :: transport_tokio :: TokioService < GreeterRequest , GreeterResponse >"
-            ),
-            "got: {got}"
-        );
-        // embassy aliases under `feature = "embassy"` cfg
-        assert!(
-            got.contains("# [cfg (feature = \"embassy\")]"),
-            "got: {got}"
-        );
-        assert!(
-            got.contains(
-                "pub type GreeterEmbassyService < M , const CHANNEL_DEPTH : usize > = \
-                 :: myelin :: transport_embassy :: EmbassyService < \
-                 M , GreeterRequest , GreeterResponse , CHANNEL_DEPTH >"
-            ),
-            "got: {got}"
-        );
-        assert!(
-            got.contains(
-                "pub type GreeterEmbassyClientTransport < 'a , M , const CHANNEL_DEPTH : usize > = \
-                 :: myelin :: transport_embassy :: EmbassyClient < \
-                 'a , M , GreeterRequest , GreeterResponse , CHANNEL_DEPTH >"
-            ),
-            "got: {got}"
-        );
+    #[cfg(feature = "tokio")]
+    mod tokio_transport_alias_tests {
+        use super::*;
+
+        #[test]
+        fn tokio_transport_alias_shape() {
+            let svc = greeter();
+            let got = canon(emit::tokio_transport_alias(&svc));
+            // No `#[cfg]` attribute in the emitted tokens.
+            assert!(!got.contains("# [cfg (feature"), "got: {got}");
+            assert!(
+                got.contains(
+                    "pub type GreeterTokioService = \
+                     :: myelin :: transport_tokio :: TokioService < GreeterRequest , GreeterResponse >"
+                ),
+                "got: {got}"
+            );
+        }
+
+        #[test]
+        fn tokio_transport_alias_visibility_propagates() {
+            let item: syn::ItemTrait = syn::parse_quote! {
+                pub(crate) trait FooService {
+                    fn a(&self) -> u32;
+                }
+            };
+            let svc = ServiceTrait::parse(item).unwrap();
+            let got = canon(emit::tokio_transport_alias(&svc));
+            assert!(!got.contains("# [cfg (feature"), "got: {got}");
+            assert!(
+                got.contains("pub (crate) type FooTokioService"),
+                "got: {got}"
+            );
+        }
     }
 
-    #[test]
-    fn transport_aliases_visibility_propagates() {
-        let item: syn::ItemTrait = syn::parse_quote! {
-            pub(crate) trait FooService {
-                fn a(&self) -> u32;
-            }
-        };
-        let svc = ServiceTrait::parse(item).unwrap();
-        let got = canon(emit::transport_aliases(&svc));
-        assert!(
-            got.contains("pub (crate) type FooTokioService"),
-            "got: {got}"
-        );
-        assert!(
-            got.contains("pub (crate) type FooEmbassyService"),
-            "got: {got}"
-        );
-        assert!(
-            got.contains("pub (crate) type FooEmbassyClientTransport"),
-            "got: {got}"
-        );
+    #[cfg(feature = "embassy")]
+    mod embassy_transport_aliases_tests {
+        use super::*;
+
+        #[test]
+        fn embassy_transport_aliases_shape() {
+            let svc = greeter();
+            let got = canon(emit::embassy_transport_aliases(&svc));
+            // No `#[cfg]` attribute in the emitted tokens.
+            assert!(!got.contains("# [cfg (feature"), "got: {got}");
+            assert!(
+                got.contains(
+                    "pub type GreeterEmbassyService < M , const CHANNEL_DEPTH : usize > = \
+                     :: myelin :: transport_embassy :: EmbassyService < \
+                     M , GreeterRequest , GreeterResponse , CHANNEL_DEPTH >"
+                ),
+                "got: {got}"
+            );
+            assert!(
+                got.contains(
+                    "pub type GreeterEmbassyClientTransport < 'a , M , const CHANNEL_DEPTH : usize > = \
+                     :: myelin :: transport_embassy :: EmbassyClient < \
+                     'a , M , GreeterRequest , GreeterResponse , CHANNEL_DEPTH >"
+                ),
+                "got: {got}"
+            );
+        }
+
+        #[test]
+        fn embassy_transport_aliases_visibility_propagates() {
+            let item: syn::ItemTrait = syn::parse_quote! {
+                pub(crate) trait FooService {
+                    fn a(&self) -> u32;
+                }
+            };
+            let svc = ServiceTrait::parse(item).unwrap();
+            let got = canon(emit::embassy_transport_aliases(&svc));
+            assert!(!got.contains("# [cfg (feature"), "got: {got}");
+            assert!(
+                got.contains("pub (crate) type FooEmbassyService"),
+                "got: {got}"
+            );
+            assert!(
+                got.contains("pub (crate) type FooEmbassyClientTransport"),
+                "got: {got}"
+            );
+        }
     }
 
     // =========================================================================
@@ -859,133 +916,144 @@ mod tests {
     // literal `$` metavars and nested `macro_rules!` declarations which only
     // become meaningful once a downstream crate invokes them; compile-level
     // verification lives in subtask 5's downstream test fixtures.
+    //
+    // `emit::embassy_instantiation` only exists when `myelin-macros` is
+    // built with its own `embassy` feature, so these tests live inside a
+    // feature-gated submodule.
     // =========================================================================
 
-    #[test]
-    fn embassy_instantiation_outer_macro_shape() {
-        let svc = greeter();
-        let got = canon(emit::embassy_instantiation(&svc));
-        assert!(
-            got.contains("# [cfg (feature = \"embassy\")]"),
-            "got: {got}"
-        );
-        assert!(got.contains("# [macro_export]"), "got: {got}");
-        assert!(
-            got.contains("macro_rules ! greeter_embassy_service"),
-            "got: {got}"
-        );
-        // Outer arm pattern.
-        assert!(
-            got.contains("($ name : ident , $ mutex : ty , $ depth : expr)"),
-            "got: {got}"
-        );
-        // `paste` is reached via ::myelin::paste::paste!.
-        assert!(
-            got.contains(":: myelin :: paste :: paste !"),
-            "expected absolute ::myelin::paste::paste! path; got: {got}"
-        );
-    }
+    #[cfg(feature = "embassy")]
+    mod embassy_instantiation_tests {
+        use super::*;
 
-    #[test]
-    fn embassy_instantiation_static_service_cell() {
-        let svc = greeter();
-        let got = canon(emit::embassy_instantiation(&svc));
-        // Static service ident prefix pasted with $name:upper.
-        assert!(
-            got.contains("[< __GREETER_SERVICE_ $ name : upper >]"),
-            "got: {got}"
-        );
-        // Full EmbassyService<…> type with stem-derived req/resp baked in.
-        assert!(
-            got.contains(
-                ":: myelin :: transport_embassy :: EmbassyService < \
-                 $ mutex , GreeterRequest , GreeterResponse , $ depth , >"
-            ),
-            "got: {got}"
-        );
-        assert!(
-            got.contains(":: myelin :: transport_embassy :: EmbassyService :: new ()"),
-            "got: {got}"
-        );
-    }
+        #[test]
+        fn embassy_instantiation_outer_macro_shape() {
+            let svc = greeter();
+            let got = canon(emit::embassy_instantiation(&svc));
+            // No `#[cfg]` attribute on the emitted macro — the gating
+            // happens at proc-macro build time, not at consumer build time.
+            assert!(
+                !got.contains("# [cfg (feature = \"embassy\")]"),
+                "expected no `#[cfg]` on emitted macro; got: {got}"
+            );
+            assert!(got.contains("# [macro_export]"), "got: {got}");
+            assert!(
+                got.contains("macro_rules ! greeter_embassy_service"),
+                "got: {got}"
+            );
+            // Outer arm pattern.
+            assert!(
+                got.contains("($ name : ident , $ mutex : ty , $ depth : expr)"),
+                "got: {got}"
+            );
+            // `paste` is reached via ::myelin::paste::paste!.
+            assert!(
+                got.contains(":: myelin :: paste :: paste !"),
+                "expected absolute ::myelin::paste::paste! path; got: {got}"
+            );
+        }
 
-    #[test]
-    fn embassy_instantiation_nested_client_macro() {
-        let svc = greeter();
-        let got = canon(emit::embassy_instantiation(&svc));
-        assert!(
-            got.contains("macro_rules ! [< $ name _client >]"),
-            "got: {got}"
-        );
-        // StaticCell via absolute ::myelin::static_cell::StaticCell path.
-        assert!(
-            got.contains(":: myelin :: static_cell :: StaticCell"),
-            "got: {got}"
-        );
-        // Baked-in client ident.
-        assert!(
-            got.contains(
-                "GreeterClient :: new (& * CELL . init \
-                 ([< __GREETER_SERVICE_ $ name : upper >] . client () ,) ,)"
-            ),
-            "got: {got}"
-        );
-    }
+        #[test]
+        fn embassy_instantiation_static_service_cell() {
+            let svc = greeter();
+            let got = canon(emit::embassy_instantiation(&svc));
+            // Static service ident prefix pasted with $name:upper.
+            assert!(
+                got.contains("[< __GREETER_SERVICE_ $ name : upper >]"),
+                "got: {got}"
+            );
+            // Full EmbassyService<…> type with stem-derived req/resp baked in.
+            assert!(
+                got.contains(
+                    ":: myelin :: transport_embassy :: EmbassyService < \
+                     $ mutex , GreeterRequest , GreeterResponse , $ depth , >"
+                ),
+                "got: {got}"
+            );
+            assert!(
+                got.contains(":: myelin :: transport_embassy :: EmbassyService :: new ()"),
+                "got: {got}"
+            );
+        }
 
-    #[test]
-    fn embassy_instantiation_nested_server_macro() {
-        let svc = greeter();
-        let got = canon(emit::embassy_instantiation(&svc));
-        assert!(
-            got.contains("macro_rules ! [< $ name _server >]"),
-            "got: {got}"
-        );
-        assert!(
-            got.contains("[< __GREETER_SERVICE_ $ name : upper >] . server ()"),
-            "got: {got}"
-        );
-    }
+        #[test]
+        fn embassy_instantiation_nested_client_macro() {
+            let svc = greeter();
+            let got = canon(emit::embassy_instantiation(&svc));
+            assert!(
+                got.contains("macro_rules ! [< $ name _client >]"),
+                "got: {got}"
+            );
+            // StaticCell via absolute ::myelin::static_cell::StaticCell path.
+            assert!(
+                got.contains(":: myelin :: static_cell :: StaticCell"),
+                "got: {got}"
+            );
+            // Baked-in client ident.
+            assert!(
+                got.contains(
+                    "GreeterClient :: new (& * CELL . init \
+                     ([< __GREETER_SERVICE_ $ name : upper >] . client () ,) ,)"
+                ),
+                "got: {got}"
+            );
+        }
 
-    #[test]
-    fn embassy_instantiation_nested_client_sync_macro() {
-        let svc = greeter();
-        let got = canon(emit::embassy_instantiation(&svc));
-        assert!(
-            got.contains("macro_rules ! [< $ name _client_sync >]"),
-            "got: {got}"
-        );
-        assert!(got.contains("($ block_on : expr)"), "got: {got}");
-        // Baked-in sync client + async client refs.
-        assert!(got.contains("GreeterClientSync :: new ("), "got: {got}");
-        assert!(
-            got.contains("GreeterClient :: new (& * CELL . init"),
-            "got: {got}"
-        );
-        assert!(got.contains("$ block_on ,"), "got: {got}");
-    }
+        #[test]
+        fn embassy_instantiation_nested_server_macro() {
+            let svc = greeter();
+            let got = canon(emit::embassy_instantiation(&svc));
+            assert!(
+                got.contains("macro_rules ! [< $ name _server >]"),
+                "got: {got}"
+            );
+            assert!(
+                got.contains("[< __GREETER_SERVICE_ $ name : upper >] . server ()"),
+                "got: {got}"
+            );
+        }
 
-    #[test]
-    fn embassy_instantiation_snake_and_screaming_stem() {
-        let item: syn::ItemTrait = syn::parse_quote! {
-            pub trait FooBarService {
-                async fn a(&self) -> u32;
-            }
-        };
-        let svc = ServiceTrait::parse(item).unwrap();
-        let got = canon(emit::embassy_instantiation(&svc));
-        assert!(
-            got.contains("macro_rules ! foo_bar_embassy_service"),
-            "expected snake_case stem in outer macro ident; got: {got}"
-        );
-        assert!(
-            got.contains("[< __FOO_BAR_SERVICE_ $ name : upper >]"),
-            "expected SCREAMING_SNAKE stem in static prefix; got: {got}"
-        );
-        assert!(
-            got.contains("FooBarClient :: new"),
-            "expected PascalCase stem in nested client body; got: {got}"
-        );
-        assert!(got.contains("FooBarClientSync :: new"), "got: {got}");
+        #[test]
+        fn embassy_instantiation_nested_client_sync_macro() {
+            let svc = greeter();
+            let got = canon(emit::embassy_instantiation(&svc));
+            assert!(
+                got.contains("macro_rules ! [< $ name _client_sync >]"),
+                "got: {got}"
+            );
+            assert!(got.contains("($ block_on : expr)"), "got: {got}");
+            // Baked-in sync client + async client refs.
+            assert!(got.contains("GreeterClientSync :: new ("), "got: {got}");
+            assert!(
+                got.contains("GreeterClient :: new (& * CELL . init"),
+                "got: {got}"
+            );
+            assert!(got.contains("$ block_on ,"), "got: {got}");
+        }
+
+        #[test]
+        fn embassy_instantiation_snake_and_screaming_stem() {
+            let item: syn::ItemTrait = syn::parse_quote! {
+                pub trait FooBarService {
+                    async fn a(&self) -> u32;
+                }
+            };
+            let svc = ServiceTrait::parse(item).unwrap();
+            let got = canon(emit::embassy_instantiation(&svc));
+            assert!(
+                got.contains("macro_rules ! foo_bar_embassy_service"),
+                "expected snake_case stem in outer macro ident; got: {got}"
+            );
+            assert!(
+                got.contains("[< __FOO_BAR_SERVICE_ $ name : upper >]"),
+                "expected SCREAMING_SNAKE stem in static prefix; got: {got}"
+            );
+            assert!(
+                got.contains("FooBarClient :: new"),
+                "expected PascalCase stem in nested client body; got: {got}"
+            );
+            assert!(got.contains("FooBarClientSync :: new"), "got: {got}");
+        }
     }
 
     // ----- subtask 4: api_id constant & attribute parsing -----

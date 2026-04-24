@@ -12,6 +12,17 @@ readme = "../README.md"
 [lib]
 proc-macro = true
 
+[features]
+default = []
+# These features don't add dependencies; they steer which transport aliases
+# and instantiation macros are emitted by `#[myelin::service]`. `myelin`
+# forwards its own `embassy`/`tokio` features here so the proc macro only
+# emits transport items when the corresponding `myelin` transport module
+# exists. Users should not enable these directly — depend on `myelin` with
+# the desired feature instead.
+embassy = []
+tokio = []
+
 [dependencies]
 syn = { version = "2", features = ["full"] }
 quote = "1"
@@ -20,4 +31,10 @@ convert_case = "0.6"
 
 [dev-dependencies]
 trybuild = "1"
-myelin = { path = "../myelin" }
+# Test-only dep so unit/trybuild tests can reference `::myelin::*` paths
+# that the proc macro bakes into its output. Enable every feature whose
+# emitted tokens reference a feature-gated `myelin` module so that
+# `cargo test -p myelin-macros --features embassy,tokio` (and the default
+# feature set) both link — feature unification does the rest in larger
+# builds.
+myelin = { path = "../myelin", features = ["embassy", "tokio"] }
