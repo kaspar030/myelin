@@ -42,4 +42,4 @@ pub use routing::{
     MuxedReplyToken, MuxedSlotGuard, MuxedSlots, MuxedSlots4, MuxedSlots8, ReplyRouter,
     RouterSlotHandle, Sequential,
 };
-pub use transport::{StreamReplyToken, StreamTransport, StreamTransportError};
+pub use transport::{RouterStorage, StreamReplyToken, StreamTransport, StreamTransportError};

@@ -288,6 +288,9 @@ impl<const N: usize, const BUF: usize> MuxedSlots<N, BUF> {
     /// The resulting `Box<MuxedSlots<N, BUF>>` has the same observable
     /// state as `Box::new(MuxedSlots::new())`; the only difference is
     /// that no intermediate is built on the stack.
+    ///
+    /// See [`StreamTransport::with_boxed_router`](crate::stream::StreamTransport::with_boxed_router)
+    /// for the constructor that consumes the result.
     pub fn new_boxed() -> Box<Self> {
         // Trigger the compile-time assertion.
         let () = Self::_ASSERT_N_LE_32;

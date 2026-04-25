@@ -27,6 +27,72 @@ use crate::stream::routing::{
 };
 use crate::transport::{ClientTransport, ServerTransport};
 
+/// Storage strategy for the reply router inside [`StreamTransport`].
+///
+/// Implemented for the concrete routers shipped by this crate
+/// ([`Sequential`] and [`MuxedSlots<N, BUF>`]) both inline and behind a
+/// [`Box`]. The trait exists so a single `StreamTransport` definition
+/// can carry either an inline-stored or a heap-stored router without
+/// changing call sites — every protocol impl reaches the underlying
+/// router via [`RouterStorage::router`].
+///
+/// The boxed form is intended for routers whose state is too large to
+/// materialise on the stack during construction. See
+/// [`MuxedSlots::new_boxed`](super::routing::MuxedSlots::new_boxed) and
+/// [`StreamTransport::with_boxed_router`].
+///
+/// # Why explicit impls
+///
+/// The natural shape — blanket impls `impl<R: ReplyRouter> RouterStorage
+/// for R` and `impl<R: ReplyRouter> RouterStorage for Box<R>` — would
+/// overlap because a downstream crate is permitted to add
+/// `impl ReplyRouter for Box<SomeRouter>` (the orphan rules allow it for
+/// types it owns). Instead, [`RouterStorage`] is implemented explicitly
+/// for the four concrete combinations used in this crate. Third-party
+/// `ReplyRouter` impls that want to plug into [`StreamTransport`] can
+/// add their own `RouterStorage` impls in the same crate as the router
+/// type.
+pub trait RouterStorage {
+    /// The underlying router type — what hot-path code dispatches
+    /// through.
+    type Router: ReplyRouter;
+
+    /// Borrow the stored router.
+    fn router(&self) -> &Self::Router;
+}
+
+impl RouterStorage for Sequential {
+    type Router = Sequential;
+    #[inline]
+    fn router(&self) -> &Self::Router {
+        self
+    }
+}
+
+impl RouterStorage for Box<Sequential> {
+    type Router = Sequential;
+    #[inline]
+    fn router(&self) -> &Self::Router {
+        self
+    }
+}
+
+impl<const N: usize, const BUF: usize> RouterStorage for MuxedSlots<N, BUF> {
+    type Router = MuxedSlots<N, BUF>;
+    #[inline]
+    fn router(&self) -> &Self::Router {
+        self
+    }
+}
+
+impl<const N: usize, const BUF: usize> RouterStorage for Box<MuxedSlots<N, BUF>> {
+    type Router = MuxedSlots<N, BUF>;
+    #[inline]
+    fn router(&self) -> &Self::Router {
+        self
+    }
+}
+
 /// A transport composed from a framer, codec, and reply router.
 ///
 /// - `R` / `W`: async reader / writer halves of the underlying byte stream.
@@ -34,22 +100,36 @@ use crate::transport::{ClientTransport, ServerTransport};
 /// - `Codec`: serialization codec (e.g., `PostcardCodec`).
 /// - `Router`: reply routing strategy (e.g., `Sequential`, `MuxedSlots`).
 /// - `Req` / `Resp`: the request and response message types.
-pub struct StreamTransport<R, W, Framer, Codec, Router, Req, Resp> {
+/// - `S`: storage for the router — either the router inline (the
+///   default, `S = Router`) or `Box<Router>` (heap-allocated). Use
+///   [`with_boxed_router`](Self::with_boxed_router) to construct the
+///   boxed form; see that constructor for when to prefer it.
+pub struct StreamTransport<R, W, Framer, Codec, Router, Req, Resp, S = Router>
+where
+    S: RouterStorage<Router = Router>,
+{
     reader: LocalLock<R>,
     writer: LocalLock<W>,
     framer: Framer,
     codec: Codec,
-    router: Router,
-    _phantom: PhantomData<(Req, Resp)>,
+    router: S,
+    _phantom: PhantomData<(Router, Req, Resp)>,
 }
 
 impl<R, W, Framer, Codec, Router, Req, Resp> StreamTransport<R, W, Framer, Codec, Router, Req, Resp>
 where
     Framer: Default,
     Codec: Default,
-    Router: Default,
+    Router: Default + RouterStorage<Router = Router>,
 {
     /// Create a new transport with default layer instances.
+    ///
+    /// Stores the router inline. For routers whose state is too large
+    /// to materialise on the stack (e.g. `MuxedSlots<N, BUF>` with
+    /// large `BUF`), prefer
+    /// [`with_boxed_router`](Self::with_boxed_router) and a heap-built
+    /// router from
+    /// [`MuxedSlots::new_boxed`](super::routing::MuxedSlots::new_boxed).
     pub fn new(reader: R, writer: W) -> Self {
         Self::with_layers(
             reader,
@@ -63,9 +143,60 @@ where
 
 impl<R, W, Framer, Codec, Router, Req, Resp>
     StreamTransport<R, W, Framer, Codec, Router, Req, Resp>
+where
+    Router: RouterStorage<Router = Router>,
 {
     /// Create a new transport with explicitly provided layer instances.
+    ///
+    /// The `router` is stored inline (i.e. by value). When the router's
+    /// state is large — e.g. `MuxedSlots<N, BUF>` with `BUF ≥ 256 KiB`
+    /// — building it on the stack first risks a stack overflow at
+    /// typical runtime worker-thread stack sizes (≈ 1–2 MiB). Use
+    /// [`with_boxed_router`](Self::with_boxed_router) together with
+    /// [`MuxedSlots::new_boxed`](super::routing::MuxedSlots::new_boxed)
+    /// in that case.
     pub fn with_layers(reader: R, writer: W, framer: Framer, codec: Codec, router: Router) -> Self {
+        Self {
+            reader: LocalLock::new(reader),
+            writer: LocalLock::new(writer),
+            framer,
+            codec,
+            router,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<R, W, Framer, Codec, Router, Req, Resp>
+    StreamTransport<R, W, Framer, Codec, Router, Req, Resp, Box<Router>>
+where
+    Router: ReplyRouter,
+    Box<Router>: RouterStorage<Router = Router>,
+{
+    /// Create a new transport that owns its router on the heap.
+    ///
+    /// Pair this with
+    /// [`MuxedSlots::new_boxed`](super::routing::MuxedSlots::new_boxed)
+    /// to build a `MuxedSlots<N, BUF>` whose `N × BUF` slot array
+    /// never lives on the stack:
+    ///
+    /// ```ignore
+    /// use myelin::stream::{LengthPrefixed, MuxedSlots, PostcardCodec, StreamTransport};
+    ///
+    /// let router = MuxedSlots::<1, 1_048_576>::new_boxed();
+    /// let transport: StreamTransport<_, _, LengthPrefixed, PostcardCodec, _, Req, Resp, _> =
+    ///     StreamTransport::with_boxed_router(reader, writer, LengthPrefixed, PostcardCodec, router);
+    /// ```
+    ///
+    /// The hot paths dispatch through [`Box`]'s auto-deref — access
+    /// pattern is identical to the inline form.
+    pub fn with_boxed_router(
+        reader: R,
+        writer: W,
+        framer: Framer,
+        codec: Codec,
+        router: Box<Router>,
+    ) -> Self {
         Self {
             reader: LocalLock::new(reader),
             writer: LocalLock::new(writer),
@@ -137,8 +268,8 @@ impl<Router> StreamReplyToken<Router> {
 // ClientTransport — Sequential
 // =========================================================================
 
-impl<R, W, Framer, Codec, Req, Resp> ClientTransport<Req, Resp>
-    for StreamTransport<R, W, Framer, Codec, Sequential, Resp, Req>
+impl<R, W, Framer, Codec, Req, Resp, S> ClientTransport<Req, Resp>
+    for StreamTransport<R, W, Framer, Codec, Sequential, Resp, Req, S>
 where
     R: AsyncBytesRead,
     W: AsyncBytesWrite,
@@ -150,6 +281,7 @@ where
     FramingWE<Framer, W>: core::fmt::Debug,
     FramingRE<Framer, R>: core::fmt::Debug + From<FramingWE<Framer, W>>,
     <Codec as Encoder>::Error: core::fmt::Debug,
+    S: RouterStorage<Router = Sequential>,
 {
     type Error = StreamTransportError<FramingRE<Framer, R>, <Codec as Encoder>::Error>;
 
@@ -192,8 +324,8 @@ where
 // ClientTransport — MuxedSlots<N, BUF>
 // =========================================================================
 
-impl<R, W, Framer, Codec, const N: usize, const BUF: usize, Req, Resp> ClientTransport<Req, Resp>
-    for StreamTransport<R, W, Framer, Codec, MuxedSlots<N, BUF>, Resp, Req>
+impl<R, W, Framer, Codec, const N: usize, const BUF: usize, Req, Resp, S> ClientTransport<Req, Resp>
+    for StreamTransport<R, W, Framer, Codec, MuxedSlots<N, BUF>, Resp, Req, S>
 where
     R: AsyncBytesRead,
     W: AsyncBytesWrite,
@@ -204,6 +336,7 @@ where
     FramingWE<Framer, W>: core::fmt::Debug,
     FramingRE<Framer, R>: core::fmt::Debug + From<FramingWE<Framer, W>>,
     <Codec as Encoder>::Error: core::fmt::Debug,
+    S: RouterStorage<Router = MuxedSlots<N, BUF>>,
 {
     type Error = StreamTransportError<FramingRE<Framer, R>, <Codec as Encoder>::Error>;
 
@@ -224,7 +357,7 @@ where
     /// which uses a dedicated pump task.
     async fn call(&self, req: Req) -> Result<Resp, Self::Error> {
         // 1. Acquire a routing slot.
-        let slot = self.router.acquire().await.map_err(|e| match e {})?;
+        let slot = self.router.router().acquire().await.map_err(|e| match e {})?;
 
         // 2. Encode the request.
         let payload = self
@@ -254,7 +387,7 @@ where
         //    gets its reply.
         loop {
             // Check if our reply has already been delivered by another task.
-            if let Some(data) = self.router.try_recv_slot(slot.slot_id()) {
+            if let Some(data) = self.router.router().try_recv_slot(slot.slot_id()) {
                 return self.codec.decode(data).map_err(StreamTransportError::Codec);
             }
 
@@ -263,7 +396,7 @@ where
                 let mut reader = self.reader.lock().await;
                 // Re-check after acquiring the reader — a concurrent
                 // task may have delivered our reply while we waited.
-                if let Some(data) = self.router.try_recv_slot(slot.slot_id()) {
+                if let Some(data) = self.router.router().try_recv_slot(slot.slot_id()) {
                     return self.codec.decode(data).map_err(StreamTransportError::Codec);
                 }
                 self.framer
@@ -285,7 +418,7 @@ where
             }
 
             // Not ours — deliver to the correct slot.
-            self.router.deliver(reply_slot_id, reply_payload);
+            self.router.router().deliver(reply_slot_id, reply_payload);
         }
     }
 }
@@ -294,8 +427,8 @@ where
 // ServerTransport — Sequential
 // =========================================================================
 
-impl<R, W, Framer, Codec, Req, Resp> ServerTransport<Req, Resp>
-    for StreamTransport<R, W, Framer, Codec, Sequential, Req, Resp>
+impl<R, W, Framer, Codec, Req, Resp, S> ServerTransport<Req, Resp>
+    for StreamTransport<R, W, Framer, Codec, Sequential, Req, Resp, S>
 where
     R: AsyncBytesRead,
     W: AsyncBytesWrite,
@@ -306,6 +439,7 @@ where
     FramingWE<Framer, W>: core::fmt::Debug,
     FramingRE<Framer, R>: core::fmt::Debug + From<FramingWE<Framer, W>>,
     <Codec as Encoder>::Error: core::fmt::Debug,
+    S: RouterStorage<Router = Sequential>,
 {
     type Error = StreamTransportError<FramingRE<Framer, R>, <Codec as Encoder>::Error>;
     type ReplyToken = StreamReplyToken<Sequential>;
@@ -346,8 +480,8 @@ where
 // ServerTransport — MuxedSlots<N, BUF>
 // =========================================================================
 
-impl<R, W, Framer, Codec, const N: usize, const BUF: usize, Req, Resp> ServerTransport<Req, Resp>
-    for StreamTransport<R, W, Framer, Codec, MuxedSlots<N, BUF>, Req, Resp>
+impl<R, W, Framer, Codec, const N: usize, const BUF: usize, Req, Resp, S> ServerTransport<Req, Resp>
+    for StreamTransport<R, W, Framer, Codec, MuxedSlots<N, BUF>, Req, Resp, S>
 where
     R: AsyncBytesRead,
     W: AsyncBytesWrite,
@@ -358,6 +492,7 @@ where
     FramingWE<Framer, W>: core::fmt::Debug,
     FramingRE<Framer, R>: core::fmt::Debug + From<FramingWE<Framer, W>>,
     <Codec as Encoder>::Error: core::fmt::Debug,
+    S: RouterStorage<Router = MuxedSlots<N, BUF>>,
 {
     type Error = StreamTransportError<FramingRE<Framer, R>, <Codec as Encoder>::Error>;
     type ReplyToken = MuxedReplyToken;

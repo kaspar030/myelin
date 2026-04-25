@@ -66,6 +66,9 @@ This generates `GreeterClient`, `GreeterRequest`/`GreeterResponse` enums,
   `duplex_construction_on_restricted_stack` regression test.
   Hot paths (`acquire`, `deliver`, `recv_reply`, `try_recv_slot`) are
   unchanged — access goes through `Box`'s auto-deref.
+- `stream::transport`: add `with_boxed_router` constructor; consumes
+  `Box<MuxedSlots<N, BUF>>` from `MuxedSlots::new_boxed()`, avoids
+  stack-overflow for `BUF` ≥ 256 KiB.
 
 ## License
 
