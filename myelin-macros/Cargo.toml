@@ -7,7 +7,22 @@ license = "Apache-2.0 OR MIT"
 repository = "https://github.com/kaspar030/myelin"
 keywords = ["async", "rpc", "proc-macro"]
 categories = ["asynchronous"]
-readme = "../README.md"
+readme = "README.md"
+homepage = "https://github.com/kaspar030/myelin"
+documentation = "https://docs.rs/myelin-macros"
+rust-version = "1.85"
+include = [
+    "src/**/*.rs",
+    "tests/**/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [lib]
 proc-macro = true

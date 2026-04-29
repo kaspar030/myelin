@@ -7,7 +7,25 @@ license = "Apache-2.0 OR MIT"
 repository = "https://github.com/kaspar030/myelin"
 keywords = ["async", "rpc", "channels", "embassy", "no_std"]
 categories = ["asynchronous", "embedded", "network-programming"]
-readme = "../README.md"
+readme = "README.md"
+homepage = "https://github.com/kaspar030/myelin"
+documentation = "https://docs.rs/myelin"
+rust-version = "1.85"
+include = [
+    "src/**/*.rs",
+    "tests/**/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+]
+
+[package.metadata.docs.rs]
+# docs.rs builds with all transport / codec features enabled so the full API
+# surface is documented. `io-test-utils` is intentionally excluded — it's
+# meant for downstream test code, not user-facing docs.
+features = ["tokio", "tokio-io", "embassy", "postcard", "cbor", "futures-io", "smol"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
