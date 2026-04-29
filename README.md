@@ -70,6 +70,11 @@ This generates `GreeterClient`, `GreeterRequest`/`GreeterResponse` enums,
   `Box<MuxedSlots<N, BUF>>` from `MuxedSlots::new_boxed()`, avoids
   stack-overflow for `BUF` ≥ 256 KiB.
 
+## Provenance
+
+This library was coded by Anthropic's Claude Opus using the [tau agent](https://github.com/tau-agent/tau).
+
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
