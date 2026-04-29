@@ -71,7 +71,7 @@ git_tag_enable = true
 
 # Internal-only crates: don't publish, don't tag, don't changelog.
 [[package]]
-name = "testing"
+name = "myelin-testing"
 publish = false
 release = false
 
