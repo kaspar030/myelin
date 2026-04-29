@@ -307,8 +307,7 @@ impl<const N: usize, const BUF: usize> MuxedSlots<N, BUF> {
             addr_of_mut!((*ptr).bitmap).write(AtomicU32::new(0));
             addr_of_mut!((*ptr).alloc_waker).write(AtomicWaker::new());
 
-            let slots_ptr: *mut SlotCell<BUF> =
-                addr_of_mut!((*ptr).slots) as *mut SlotCell<BUF>;
+            let slots_ptr: *mut SlotCell<BUF> = addr_of_mut!((*ptr).slots) as *mut SlotCell<BUF>;
             for i in 0..N {
                 // `init_in_place` writes directly into the heap slot,
                 // avoiding any `BUF`-scaled stack intermediate.
@@ -879,8 +878,7 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(1 << 20) // 1 MiB
             .spawn(|| {
-                let router: Box<MuxedSlots<32, 131_072>> =
-                    MuxedSlots::<32, 131_072>::new_boxed();
+                let router: Box<MuxedSlots<32, 131_072>> = MuxedSlots::<32, 131_072>::new_boxed();
                 // Touch the router to make sure the optimiser does not
                 // elide the allocation.
                 assert_eq!(router.bitmap.load(Ordering::Relaxed), 0);

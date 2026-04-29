@@ -141,8 +141,7 @@ where
     }
 }
 
-impl<R, W, Framer, Codec, Router, Req, Resp>
-    StreamTransport<R, W, Framer, Codec, Router, Req, Resp>
+impl<R, W, Framer, Codec, Router, Req, Resp> StreamTransport<R, W, Framer, Codec, Router, Req, Resp>
 where
     Router: RouterStorage<Router = Router>,
 {
@@ -357,7 +356,12 @@ where
     /// which uses a dedicated pump task.
     async fn call(&self, req: Req) -> Result<Resp, Self::Error> {
         // 1. Acquire a routing slot.
-        let slot = self.router.router().acquire().await.map_err(|e| match e {})?;
+        let slot = self
+            .router
+            .router()
+            .acquire()
+            .await
+            .map_err(|e| match e {})?;
 
         // 2. Encode the request.
         let payload = self

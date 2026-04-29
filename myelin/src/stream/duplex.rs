@@ -715,8 +715,7 @@ mod tests {
         // *and* the `DuplexShared::slots` field is boxed (so the slot
         // array is not re-materialised on the stack during
         // `DuplexShared` construction).
-        type BigDx<R, W> =
-            DuplexStreamTransport<R, W, LengthPrefixed, PostcardCodec, 32, 131_072>;
+        type BigDx<R, W> = DuplexStreamTransport<R, W, LengthPrefixed, PostcardCodec, 32, 131_072>;
 
         std::thread::Builder::new()
             .stack_size(1 << 20) // 1 MiB
